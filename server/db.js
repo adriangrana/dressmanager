@@ -72,6 +72,10 @@ db.exec(`
     studio_name TEXT NOT NULL DEFAULT '',
     contact_name TEXT NOT NULL DEFAULT '',
     duration_minutes INTEGER NOT NULL DEFAULT 120,
+    start_time TEXT NOT NULL DEFAULT '10:00',
+    payment_status TEXT NOT NULL DEFAULT 'pending',
+    paid_at TEXT,
+    notes TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS bookings_date_idx ON bookings(booking_date);
@@ -94,7 +98,16 @@ db.prepare("UPDATE dresses SET category='Premium' WHERE id='aurora-rose' AND cat
 for (const [column, definition] of Object.entries({
   session_type: "TEXT NOT NULL DEFAULT 'exterior'", studio_name: "TEXT NOT NULL DEFAULT ''",
   contact_name: "TEXT NOT NULL DEFAULT ''", duration_minutes: "INTEGER NOT NULL DEFAULT 120",
+  start_time: "TEXT NOT NULL DEFAULT '10:00'", payment_status: "TEXT NOT NULL DEFAULT 'pending'",
+  paid_at: "TEXT", notes: "TEXT NOT NULL DEFAULT ''",
 })) ensureColumn("bookings", column, definition);
+
+// Preserve the accounting meaning of sessions completed before payment tracking existed.
+const paymentMigration = db.prepare("SELECT value FROM settings WHERE key='booking_payment_migration_v1'").get();
+if (!paymentMigration) {
+  db.prepare("UPDATE bookings SET payment_status='paid', paid_at=COALESCE(paid_at,created_at) WHERE status='completed'").run();
+  db.prepare("INSERT INTO settings(key,value) VALUES('booking_payment_migration_v1',1)").run();
+}
 
 const defaultSettings = {
   vat_rate: 0.21,

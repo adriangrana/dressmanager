@@ -6,10 +6,10 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { calculateRental, db, ensureAdmin, getSettings, PUBLIC_DIR, ROOT } from "./db.js";
+import { calculateRental, db, ensureAdmin, getSettings, DATA_DIR, PUBLIC_DIR, ROOT } from "./db.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -95,15 +95,25 @@ function publicDress(row) {
     sizeLabel: row.size_label,
     sizeRange: row.size_range,
     tariffs: {
-      interior: { price: row.interior_price, includedMinutes: row.interior_included_minutes, extraPrice: row.interior_extra_30m, extraMinutes: 30, maintenance: row.interior_maintenance },
-      exterior: { price: row.exterior_price, includedMinutes: row.exterior_included_minutes, extraPrice: row.exterior_extra_hour, extraMinutes: 60, maintenance: row.exterior_maintenance },
+      interior: { price: row.interior_price, includedMinutes: row.interior_included_minutes, extraPrice: row.interior_extra_30m, extraMinutes: 30 },
+      exterior: { price: row.exterior_price, includedMinutes: row.exterior_included_minutes, extraPrice: row.exterior_extra_hour, extraMinutes: 60 },
     },
     images: JSON.parse(row.images || "[]"),
   };
 }
 
 function adminDress(row) {
-  return { ...publicDress(row), purchaseCost: row.purchase_cost, active: Boolean(row.active), createdAt: row.created_at };
+  const dress = publicDress(row);
+  return {
+    ...dress,
+    tariffs: {
+      interior: { ...dress.tariffs.interior, maintenance: row.interior_maintenance },
+      exterior: { ...dress.tariffs.exterior, maintenance: row.exterior_maintenance },
+    },
+    purchaseCost: row.purchase_cost,
+    active: Boolean(row.active),
+    createdAt: row.created_at,
+  };
 }
 
 function cleanText(value, maxLength = 160) {
@@ -140,6 +150,44 @@ function validateDate(value, allowPast = false) {
   return date;
 }
 
+function validateTime(value) {
+  const time = cleanText(value, 5);
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) throw new Error("Selecciona una hora válida.");
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59 || minutes % 30 !== 0) throw new Error("La hora debe estar en bloques de 30 minutos.");
+  return time;
+}
+
+function timeToMinutes(value) {
+  const [hours, minutes] = String(value || "00:00").split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesToTime(value) {
+  const safe = Math.max(0, Math.min(24 * 60, Number(value) || 0));
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function bookingEndTime(startTime, durationMinutes) {
+  return minutesToTime(timeToMinutes(startTime) + Number(durationMinutes));
+}
+
+function hasBookingConflict(dressId, date, startTime, durationMinutes, excludeId = "") {
+  const start = timeToMinutes(startTime);
+  const end = start + Number(durationMinutes);
+  if (end > 24 * 60) throw new Error("La sesión no puede terminar después de medianoche.");
+  const rows = db.prepare("SELECT id,start_time,duration_minutes FROM bookings WHERE dress_id=? AND booking_date=? AND status IN ('requested','confirmed','completed') AND id<>?").all(dressId, date, excludeId);
+  return rows.some((row) => {
+    const currentStart = timeToMinutes(row.start_time || "10:00");
+    const currentEnd = currentStart + Number(row.duration_minutes || 120);
+    return start < currentEnd && end > currentStart;
+  });
+}
+
 function safeSlug(value) {
   return cleanText(value, 80).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "vestido";
 }
@@ -160,6 +208,60 @@ const upload = multer({
     callback(null, true);
   },
 });
+
+function csvCell(value) {
+  const textValue = String(value ?? "");
+  return /[",\n]/.test(textValue) ? `"${textValue.replace(/"/g, '""')}"` : textValue;
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createStoredZip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name.replace(/\\/g, "/"));
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data);
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 6); local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(0, 10); local.writeUInt16LE(0, 12); local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22); local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
+    locals.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10); central.writeUInt16LE(0, 12); central.writeUInt16LE(0, 14); central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30); central.writeUInt16LE(0, 32); central.writeUInt16LE(0, 34); central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38); central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
+  return Buffer.concat([...locals, ...centrals, end]);
+}
+
+function collectUploadEntries(root, prefix = "uploads") {
+  if (!existsSync(root)) return [];
+  return readdirSync(root).flatMap((name) => {
+    const fullPath = path.join(root, name);
+    const zipName = `${prefix}/${name}`;
+    return statSync(fullPath).isDirectory() ? collectUploadEntries(fullPath, zipName) : [{ name: zipName, data: readFileSync(fullPath) }];
+  });
+}
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
@@ -206,36 +308,48 @@ app.post("/api/public/requests", (req, res) => {
     const sessionType = cleanText(req.body?.sessionType, 20);
     const phone = cleanText(req.body?.phone, 40);
     const bookingDate = validateDate(req.body?.date);
+    const startTime = validateTime(req.body?.startTime);
     const durationMinutes = Number(req.body?.durationMinutes);
     if (studioName.length < 2) throw new Error("Escribe el nombre del estudio fotográfico o fotógrafo.");
-    if (!['interior', 'exterior'].includes(sessionType)) throw new Error("Selecciona si la sesión será en interior o exterior.");
+    if (!["interior", "exterior"].includes(sessionType)) throw new Error("Selecciona si la sesión será en interior o exterior.");
     if (!hasSessionTariff(dress, sessionType)) throw new Error("Este vestido aún tiene la tarifa de ese tipo de sesión pendiente de definir.");
     if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes > 720 || durationMinutes % 30 !== 0) throw new Error("Selecciona una duración válida en bloques de 30 minutos.");
-    const occupied = db.prepare("SELECT id FROM bookings WHERE dress_id=? AND booking_date=? AND status IN ('requested','confirmed','completed')").get(dress.id, bookingDate);
-    if (occupied) return res.status(409).json({ error: "Ese vestido ya tiene una sesión solicitada para ese día. Elige otra fecha." });
+    if (hasBookingConflict(dress.id, bookingDate, startTime, durationMinutes)) return res.status(409).json({ error: "Ese vestido ya está ocupado en ese horario. Elige otra hora o fecha." });
     const economics = calculateRental(dress, sessionType, durationMinutes);
-    db.prepare(`INSERT INTO bookings(id,dress_id,customer_name,phone,booking_date,hours,gross,status,vat,helper_cost,maintenance,session_type,studio_name,contact_name,duration_minutes,created_at)
-      VALUES(?,?,?,?,?,?,?,'requested',?,?,?,?,?,?,?,?)`).run(randomUUID(), dress.id, contactName || studioName, phone, bookingDate, Math.ceil(durationMinutes / 60), economics.gross, economics.vat, economics.helperCost, economics.maintenance, sessionType, studioName, contactName, durationMinutes, new Date().toISOString());
+    db.prepare(`INSERT INTO bookings
+      (id,dress_id,customer_name,phone,booking_date,hours,gross,status,vat,helper_cost,maintenance,session_type,studio_name,contact_name,duration_minutes,start_time,payment_status,paid_at,notes,created_at)
+      VALUES (@id,@dressId,@customerName,@phone,@date,@hours,@gross,'requested',@vat,@helper,@maintenance,@sessionType,@studioName,@contactName,@durationMinutes,@startTime,'pending',NULL,'',@createdAt)`)
+      .run({
+        id: randomUUID(), dressId: dress.id, customerName: contactName || studioName, phone, date: bookingDate,
+        hours: Math.ceil(durationMinutes / 60), gross: economics.gross, vat: economics.vat, helper: economics.helperCost,
+        maintenance: economics.maintenance, sessionType, studioName, contactName, durationMinutes, startTime, createdAt: new Date().toISOString(),
+      });
     res.status(201).json({ message: "Solicitud recibida. El atelier contactará con el estudio o fotógrafo para confirmar la disponibilidad de la sesión supervisada." });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
 app.get("/api/admin/overview", requireAdmin, (_req, res) => {
-  const completed = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(gross),0) AS gross, COALESCE(SUM(vat),0) AS vat, COALESCE(SUM(helper_cost),0) AS helper, COALESCE(SUM(maintenance),0) AS maintenance FROM bookings WHERE status='completed'").get();
+  const completed = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(gross),0) AS gross FROM bookings WHERE status='completed'").get();
+  const paid = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(gross),0) AS gross, COALESCE(SUM(vat),0) AS vat, COALESCE(SUM(helper_cost),0) AS helper, COALESCE(SUM(maintenance),0) AS maintenance FROM bookings WHERE status='completed' AND payment_status='paid'").get();
+  const outstanding = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(gross),0) AS gross FROM bookings WHERE status='completed' AND payment_status<>'paid'").get();
   const dressStats = db.prepare("SELECT COALESCE(SUM(active),0) AS count, COALESCE(SUM(purchase_cost),0) AS investment FROM dresses").get();
   const requests = db.prepare("SELECT COUNT(*) AS count FROM bookings WHERE status='requested'").get().count;
   const confirmed = db.prepare("SELECT COUNT(*) AS count FROM bookings WHERE status='confirmed'").get().count;
-  const profit = completed.gross - completed.vat - completed.helper - completed.maintenance;
+  const profit = paid.gross - paid.vat - paid.helper - paid.maintenance;
   res.json({
     dresses: dressStats.count,
     investment: dressStats.investment,
     completedRentals: completed.count,
+    paidRentals: paid.count,
     requests,
     confirmed,
-    grossRevenue: completed.gross,
-    vat: completed.vat,
-    helperCosts: completed.helper,
-    maintenance: completed.maintenance,
+    grossRevenue: paid.gross,
+    accruedRevenue: completed.gross,
+    outstandingRevenue: outstanding.gross,
+    outstandingCount: outstanding.count,
+    vat: paid.vat,
+    helperCosts: paid.helper,
+    maintenance: paid.maintenance,
     distributableProfit: profit,
     eachShare: profit / 2,
     settings: getSettings(),
@@ -290,11 +404,27 @@ app.patch("/api/admin/dresses/:id", requireAdmin, upload.array("images", 8), (re
     const exteriorPrice = optionalPrice(req.body.exteriorPrice ?? existing.exterior_price, "de sesión exterior");
     const exteriorExtra = optionalPrice(req.body.exteriorExtraPrice ?? existing.exterior_extra_hour, "por hora adicional");
     const exteriorMaintenance = optionalPrice(req.body.exteriorMaintenance ?? existing.exterior_maintenance, "de mantenimiento exterior");
-    const active = req.body.active === undefined ? existing.active : (req.body.active ? 1 : 0);
-    const images = [...JSON.parse(existing.images || "[]"), ...(req.files || []).map((file) => `/uploads/${file.filename}`)];
+    const active = req.body.active === undefined ? existing.active : ([true, 1, "1", "true"].includes(req.body.active) ? 1 : 0);
+    const previousImages = JSON.parse(existing.images || "[]");
+    let keptImages = previousImages;
+    if (req.body.existingImages !== undefined) {
+      let requestedImages;
+      try { requestedImages = JSON.parse(req.body.existingImages); } catch { throw new Error("No se pudo interpretar el orden de las fotos."); }
+      if (!Array.isArray(requestedImages) || requestedImages.some((image) => !previousImages.includes(image))) throw new Error("La galería contiene una foto no válida.");
+      keptImages = [...new Set(requestedImages)];
+    }
+    const newImages = (req.files || []).map((file) => `/uploads/${file.filename}`);
+    const images = [...keptImages, ...newImages];
+    if (!images.length) throw new Error("El vestido debe conservar al menos una foto.");
     if (!DRESS_CATEGORIES.includes(category)) throw new Error("Selecciona una categoría válida.");
     db.prepare(`UPDATE dresses SET name=?,category=?,color=?,description=?,size_label=?,size_range=?,purchase_cost=?,rent_price=?,included_hours=?,extra_hour_price=?,interior_price=?,interior_extra_30m=?,interior_maintenance=?,exterior_price=?,exterior_extra_hour=?,exterior_maintenance=?,images=?,active=? WHERE id=?`)
       .run(name, category, color, description, sizeLabel, sizeRange, purchaseCost, exteriorPrice, 2, exteriorExtra, interiorPrice, interiorExtra, interiorMaintenance, exteriorPrice, exteriorExtra, exteriorMaintenance, JSON.stringify(images), active, req.params.id);
+    for (const removed of previousImages.filter((image) => !keptImages.includes(image) && image.startsWith("/uploads/"))) {
+      const target = path.join(PUBLIC_DIR, removed.replace(/^\//, ""));
+      if (target.startsWith(path.join(PUBLIC_DIR, "uploads")) && existsSync(target)) {
+        try { unlinkSync(target); } catch {}
+      }
+    }
     res.json({ dress: adminDress(db.prepare("SELECT * FROM dresses WHERE id=?").get(req.params.id)) });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
@@ -302,7 +432,7 @@ app.patch("/api/admin/dresses/:id", requireAdmin, upload.array("images", 8), (re
 app.get("/api/admin/bookings", requireAdmin, (_req, res) => {
   const rows = db.prepare(`SELECT b.*, d.name AS dress_name, d.color AS dress_color
     FROM bookings b JOIN dresses d ON d.id=b.dress_id
-    ORDER BY CASE b.status WHEN 'requested' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END, b.booking_date ASC`).all();
+    ORDER BY CASE b.status WHEN 'requested' THEN 0 WHEN 'confirmed' THEN 1 WHEN 'completed' THEN 2 ELSE 3 END, b.booking_date ASC, b.start_time ASC`).all();
   res.json({ bookings: rows.map((row) => ({
     id: row.id,
     dressId: row.dress_id,
@@ -313,14 +443,19 @@ app.get("/api/admin/bookings", requireAdmin, (_req, res) => {
     contactName: row.contact_name,
     phone: row.phone,
     date: row.booking_date,
+    startTime: row.start_time || "10:00",
+    endTime: bookingEndTime(row.start_time || "10:00", row.duration_minutes || row.hours * 60),
     hours: row.hours,
     durationMinutes: row.duration_minutes || row.hours * 60,
     sessionType: row.session_type || "exterior",
     gross: row.gross,
     status: row.status,
+    paymentStatus: row.payment_status || "pending",
+    paidAt: row.paid_at,
     vat: row.vat,
     helperCost: row.helper_cost,
     maintenance: row.maintenance,
+    notes: row.notes || "",
     createdAt: row.created_at,
   })) });
 });
@@ -333,19 +468,62 @@ app.post("/api/admin/bookings", requireAdmin, (req, res) => {
     const contactName = cleanText(req.body?.contactName, 100);
     const phone = cleanText(req.body?.phone, 40);
     const date = validateDate(req.body?.date, true);
+    const startTime = validateTime(req.body?.startTime || "10:00");
     const sessionType = cleanText(req.body?.sessionType, 20);
     const durationMinutes = Number(req.body?.durationMinutes);
+    const paymentStatus = cleanText(req.body?.paymentStatus || "pending", 20);
+    const notes = cleanText(req.body?.notes, 1000);
     if (studioName.length < 2) throw new Error("Añade el estudio fotográfico o fotógrafo.");
-    if (!['interior', 'exterior'].includes(sessionType)) throw new Error("Selecciona el tipo de sesión.");
+    if (!["interior", "exterior"].includes(sessionType)) throw new Error("Selecciona el tipo de sesión.");
+    if (!["pending", "paid"].includes(paymentStatus)) throw new Error("Selecciona un estado de cobro válido.");
     if (!hasSessionTariff(dress, sessionType)) throw new Error("Define primero toda la tarifa de esta sesión para el vestido.");
     if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes > 720 || durationMinutes % 30 !== 0) throw new Error("Selecciona una duración válida en bloques de 30 minutos.");
-    const occupied = db.prepare("SELECT id FROM bookings WHERE dress_id=? AND booking_date=? AND status IN ('requested','confirmed','completed')").get(dress.id, date);
-    if (occupied) return res.status(409).json({ error: "Ya hay una sesión registrada para ese vestido y fecha." });
+    if (hasBookingConflict(dress.id, date, startTime, durationMinutes)) return res.status(409).json({ error: "Ese vestido ya está ocupado en ese horario." });
     const economics = calculateRental(dress, sessionType, durationMinutes);
     const id = randomUUID();
-    db.prepare(`INSERT INTO bookings(id,dress_id,customer_name,phone,booking_date,hours,gross,status,vat,helper_cost,maintenance,session_type,studio_name,contact_name,duration_minutes,created_at)
-      VALUES(?,?,?,?,?,?,?,'completed',?,?,?,?,?,?,?,?)`).run(id, dress.id, contactName || studioName, phone, date, Math.ceil(durationMinutes / 60), economics.gross, economics.vat, economics.helperCost, economics.maintenance, sessionType, studioName, contactName, durationMinutes, new Date().toISOString());
+    db.prepare(`INSERT INTO bookings
+      (id,dress_id,customer_name,phone,booking_date,hours,gross,status,vat,helper_cost,maintenance,session_type,studio_name,contact_name,duration_minutes,start_time,payment_status,paid_at,notes,created_at)
+      VALUES (@id,@dressId,@customerName,@phone,@date,@hours,@gross,'completed',@vat,@helper,@maintenance,@sessionType,@studioName,@contactName,@durationMinutes,@startTime,@paymentStatus,@paidAt,@notes,@createdAt)`)
+      .run({
+        id, dressId: dress.id, customerName: contactName || studioName, phone, date, hours: Math.ceil(durationMinutes / 60),
+        gross: economics.gross, vat: economics.vat, helper: economics.helperCost, maintenance: economics.maintenance,
+        sessionType, studioName, contactName, durationMinutes, startTime, paymentStatus,
+        paidAt: paymentStatus === "paid" ? new Date().toISOString() : null, notes, createdAt: new Date().toISOString(),
+      });
     res.status(201).json({ id });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.patch("/api/admin/bookings/:id", requireAdmin, (req, res) => {
+  try {
+    const booking = db.prepare("SELECT * FROM bookings WHERE id=?").get(req.params.id);
+    if (!booking) return res.status(404).json({ error: "No encontramos esa sesión." });
+    const dressId = cleanText(req.body?.dressId ?? booking.dress_id, 100);
+    const dress = db.prepare("SELECT * FROM dresses WHERE id=?").get(dressId);
+    if (!dress) return res.status(404).json({ error: "No encontramos el vestido de esta sesión." });
+    const studioName = cleanText(req.body?.studioName ?? booking.studio_name, 120);
+    const contactName = cleanText(req.body?.contactName ?? booking.contact_name, 100);
+    const phone = cleanText(req.body?.phone ?? booking.phone, 40);
+    const date = validateDate(req.body?.date ?? booking.booking_date, true);
+    const startTime = validateTime(req.body?.startTime ?? booking.start_time ?? "10:00");
+    const sessionType = cleanText(req.body?.sessionType ?? booking.session_type, 20);
+    const durationMinutes = Number(req.body?.durationMinutes ?? booking.duration_minutes);
+    const paymentStatus = cleanText(req.body?.paymentStatus ?? booking.payment_status ?? "pending", 20);
+    const notes = cleanText(req.body?.notes ?? booking.notes, 1000);
+    if (studioName.length < 2) throw new Error("Añade el estudio fotográfico o fotógrafo.");
+    if (!["interior", "exterior"].includes(sessionType)) throw new Error("Selecciona el tipo de sesión.");
+    if (!["pending", "paid"].includes(paymentStatus)) throw new Error("Selecciona un estado de cobro válido.");
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes > 720 || durationMinutes % 30 !== 0) throw new Error("Selecciona una duración válida en bloques de 30 minutos.");
+    if (booking.status !== "cancelled" && hasBookingConflict(dressId, date, startTime, durationMinutes, booking.id)) return res.status(409).json({ error: "Ese vestido ya está ocupado en ese horario." });
+    const gross = req.body?.gross === undefined ? Number(booking.gross) : validMoney(req.body.gross, "cobrado");
+    const helperCost = req.body?.helperCost === undefined ? Number(booking.helper_cost) : validMoney(req.body.helperCost, "de ayudante");
+    const maintenance = req.body?.maintenance === undefined ? Number(booking.maintenance) : validMoney(req.body.maintenance, "de lavandería / mantenimiento");
+    const vatRate = Number(getSettings().vat_rate);
+    const vat = gross - gross / (1 + vatRate);
+    const paidAt = paymentStatus === "paid" ? (booking.paid_at || new Date().toISOString()) : null;
+    db.prepare(`UPDATE bookings SET dress_id=?,customer_name=?,phone=?,booking_date=?,hours=?,gross=?,vat=?,helper_cost=?,maintenance=?,session_type=?,studio_name=?,contact_name=?,duration_minutes=?,start_time=?,payment_status=?,paid_at=?,notes=? WHERE id=?`)
+      .run(dressId, contactName || studioName, phone, date, Math.ceil(durationMinutes / 60), gross, vat, helperCost, maintenance, sessionType, studioName, contactName, durationMinutes, startTime, paymentStatus, paidAt, notes, booking.id);
+    res.json({ ok: true });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
@@ -367,6 +545,64 @@ app.patch("/api/admin/bookings/:id/status", requireAdmin, (req, res) => {
   }
   if (result.changes !== 1) return res.status(409).json({ error: "La solicitud cambió. Actualiza la agenda e inténtalo de nuevo." });
   res.json({ ok: true });
+});
+
+app.get("/api/admin/export/bookings.csv", requireAdmin, (_req, res) => {
+  const rows = db.prepare(`SELECT b.*, d.name AS dress_name FROM bookings b JOIN dresses d ON d.id=b.dress_id ORDER BY b.booking_date,b.start_time`).all();
+  const header = ["Fecha","Inicio","Fin","Estudio / fotógrafo","Contacto","Teléfono","Vestido","Tipo","Duración (min)","Estado sesión","Estado cobro","Importe bruto","IVA","Ayudante","Lavandería / mantenimiento","Notas"];
+  const lines = rows.map((row) => [
+    row.booking_date, row.start_time || "10:00", bookingEndTime(row.start_time || "10:00", row.duration_minutes || 120),
+    row.studio_name || row.customer_name, row.contact_name, row.phone, row.dress_name, row.session_type,
+    row.duration_minutes, row.status, row.payment_status || "pending", Number(row.gross).toFixed(2), Number(row.vat).toFixed(2),
+    Number(row.helper_cost).toFixed(2), Number(row.maintenance).toFixed(2), row.notes || "",
+  ].map(csvCell).join(","));
+  const csv = "\ufeff" + [header.map(csvCell).join(","), ...lines].join("\n");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="tul-en-foco-reservas-${new Date().toISOString().slice(0,10)}.csv"`);
+  res.send(csv);
+});
+
+app.get("/api/admin/export/finance.csv", requireAdmin, (_req, res) => {
+  const rows = db.prepare(`SELECT b.*, d.name AS dress_name
+    FROM bookings b JOIN dresses d ON d.id=b.dress_id
+    WHERE b.status='completed'
+    ORDER BY b.booking_date,b.start_time`).all();
+  const header = ["Fecha","Vestido","Estudio / fotógrafo","Estado cobro","Bruto","IVA","Base sin IVA","Ayudante real","Mantenimiento / reparación real","Beneficio repartible","Mitad por socio"];
+  const lines = rows.map((row) => {
+    const gross = Number(row.gross || 0);
+    const vat = Number(row.vat || 0);
+    const helper = Number(row.helper_cost || 0);
+    const maintenance = Number(row.maintenance || 0);
+    const profit = gross - vat - helper - maintenance;
+    return [
+      row.booking_date, row.dress_name, row.studio_name || row.customer_name, row.payment_status || "pending",
+      gross.toFixed(2), vat.toFixed(2), (gross - vat).toFixed(2), helper.toFixed(2), maintenance.toFixed(2),
+      profit.toFixed(2), (profit / 2).toFixed(2),
+    ].map(csvCell).join(",");
+  });
+  const csv = "\ufeff" + [header.map(csvCell).join(","), ...lines].join("\n");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="tul-en-foco-finanzas-${new Date().toISOString().slice(0,10)}.csv"`);
+  res.send(csv);
+});
+
+app.get("/api/admin/backup.zip", requireAdmin, async (_req, res, next) => {
+  const tempDb = path.join(DATA_DIR, `backup-${randomUUID()}.sqlite`);
+  try {
+    await db.backup(tempDb);
+    const entries = [{ name: "data/dressmanager.sqlite", data: readFileSync(tempDb) }, ...collectUploadEntries(path.join(PUBLIC_DIR, "uploads"))];
+    const manifest = {
+      createdAt: new Date().toISOString(),
+      contents: ["data/dressmanager.sqlite", "uploads/"],
+      note: "Incluye la base de datos y las fotos subidas desde el panel. Las imágenes incluidas en el código fuente se recuperan desde el repositorio.",
+    };
+    entries.push({ name: "README-backup.json", data: Buffer.from(JSON.stringify(manifest, null, 2)) });
+    const zip = createStoredZip(entries);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="tul-en-foco-backup-${new Date().toISOString().slice(0,10)}.zip"`);
+    res.send(zip);
+  } catch (error) { next(error); }
+  finally { if (existsSync(tempDb)) { try { unlinkSync(tempDb); } catch {} } }
 });
 
 app.use(express.static(PUBLIC_DIR, { maxAge: isProduction ? "1d" : 0 }));

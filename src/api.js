@@ -8,7 +8,7 @@ export async function api(path, options = {}) {
   return payload;
 }
 
-export function formatMoney(value, digits = 0) {
+export function formatMoney(value, digits = 2) {
   return new Intl.NumberFormat("es-ES", {
     style: "currency",
     currency: "EUR",
