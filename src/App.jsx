@@ -172,6 +172,7 @@ function SizeGuide() {
 function PublicBookingModal({ dress, onClose }) {
   const [sessionType, setSessionType] = useState("exterior");
   const [durationMinutes, setDurationMinutes] = useState(120);
+  const [startTime, setStartTime] = useState("10:00");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -180,12 +181,28 @@ function PublicBookingModal({ dress, onClose }) {
     setBusy(true); setError("");
     const form = new FormData(event.currentTarget);
     try {
-      const result = await api("/api/public/requests", { method: "POST", body: JSON.stringify({ dressId: dress.id, studioName: form.get("studioName"), contactName: form.get("contactName"), phone: form.get("phone"), date: form.get("date"), sessionType, durationMinutes }) });
+      const result = await api("/api/public/requests", { method: "POST", body: JSON.stringify({
+        dressId: dress.id,
+        studioName: form.get("studioName"),
+        contactName: form.get("contactName"),
+        phone: form.get("phone"),
+        date: form.get("date"),
+        startTime,
+        sessionType,
+        durationMinutes,
+      }) });
       setSuccess(result.message);
     } catch (caught) { setError(caught.message); }
     finally { setBusy(false); }
   }
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="form-modal" role="dialog" aria-modal="true" aria-labelledby="booking-title"><button className="close-button" onClick={onClose} aria-label="Cerrar"><X size={21} /></button>{success ? <div className="success-state"><span className="success-icon"><CircleCheck size={31} /></span><span className="kicker">SOLICITUD REGISTRADA</span><h2 id="booking-title">Gracias por escribirnos.</h2><p>{success}</p><button className="button button-dark" onClick={onClose}>Volver a la colección</button></div> : <><span className="kicker"><i /> PARA ESTUDIOS Y FOTÓGRAFOS</span><h2 id="booking-title">Coordina una sesión.</h2><p>Indica quién realizará la sesión y cómo se utilizará <strong>{dress.name}</strong>. El vestido estará supervisado por el equipo fotográfico.</p><form onSubmit={submit} className="form-stack"><label>Estudio fotográfico o fotógrafo<input name="studioName" minLength="2" maxLength="120" required placeholder="Nombre del estudio o profesional" /></label><label>Persona de contacto<input name="contactName" maxLength="100" placeholder="Nombre de quien coordina" /></label><div className="form-columns"><label>Tipo de sesión<select value={sessionType} onChange={(event) => { const next = event.target.value; setSessionType(next); setDurationMinutes(next === "interior" ? 30 : 120); }}><option value="interior">Interior · desde 230 € / 30 min</option><option value="exterior">Exterior · desde 350 € / hasta 2 h</option></select></label><label>Duración<select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>{durationOptions(sessionType).map((value) => <option key={value} value={value}>{durationLabel(value)}</option>)}</select></label></div><div className="form-columns"><label>Fecha de la sesión<input name="date" type="date" min={localDate()} required /></label><label>Teléfono de contacto<input name="phone" type="tel" maxLength="40" required placeholder="+34 600 000 000" /></label></div><div className="modal-total"><span>Precio estimado · {typeLabel(sessionType)} · IVA incluido</span><strong>{formatMoney(priceFor(dress, sessionType, durationMinutes))}</strong></div>{error && <div className="form-error"><Info size={16} />{error}</div>}<button className="button button-dark button-wide" disabled={busy}>{busy ? "Enviando…" : "Solicitar disponibilidad"}<ArrowUpRight size={17} /></button><small className="form-footnote">La solicitud no confirma la cita. El equipo contactará con el estudio para coordinar la sesión.</small></form></>}</section></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="form-modal" role="dialog" aria-modal="true" aria-labelledby="booking-title"><button className="close-button" onClick={onClose} aria-label="Cerrar"><X size={21} /></button>{success ? <div className="success-state"><span className="success-icon"><CircleCheck size={31} /></span><span className="kicker">SOLICITUD REGISTRADA</span><h2 id="booking-title">Gracias por escribirnos.</h2><p>{success}</p><button className="button button-dark" onClick={onClose}>Volver a la colección</button></div> : <><span className="kicker"><i /> EXCLUSIVO PARA PROFESIONALES</span><h2 id="booking-title">Coordina una sesión.</h2><p>Indica quién realizará la sesión y cómo se utilizará <strong>{dress.name}</strong>. El vestido estará supervisado por el equipo fotográfico.</p><form onSubmit={submit} className="form-stack">
+    <label>Estudio fotográfico o fotógrafo<input name="studioName" minLength="2" maxLength="120" required placeholder="Nombre del estudio o profesional" /></label>
+    <label>Persona de contacto<input name="contactName" maxLength="100" placeholder="Nombre de quien coordina" /></label>
+    <div className="form-columns"><label>Tipo de sesión<select value={sessionType} onChange={(event) => { const next = event.target.value; setSessionType(next); setDurationMinutes(tariffFor(dress, next).includedMinutes); }}><option value="interior">Interior · desde {formatMoney(tariffFor(dress, "interior").price)} / {durationLabel(tariffFor(dress, "interior").includedMinutes)}</option><option value="exterior">Exterior · desde {formatMoney(tariffFor(dress, "exterior").price)} / {durationLabel(tariffFor(dress, "exterior").includedMinutes)}</option></select></label><label>Duración<select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>{durationOptions(sessionType).map((value) => <option key={value} value={value}>{durationLabel(value)}</option>)}</select></label></div>
+    <div className="form-columns"><label>Fecha de la sesión<input name="date" type="date" min={localDate()} required /></label><label>Hora de inicio<select value={startTime} onChange={(event) => setStartTime(event.target.value)}>{timeOptions.map((time) => <option key={time}>{time}</option>)}</select></label></div>
+    <label>Teléfono de contacto<input name="phone" type="tel" maxLength="40" required placeholder="+34 600 000 000" /></label>
+    <div className="modal-total"><span>Precio estimado · {typeLabel(sessionType)} · {startTime}–{addMinutesToTime(startTime, durationMinutes)} · IVA incluido</span><strong>{formatMoney(priceFor(dress, sessionType, durationMinutes))}</strong></div>
+    {error && <div className="form-error"><Info size={16} />{error}</div>}<button className="button button-dark button-wide" disabled={busy}>{busy ? "Enviando…" : "Solicitar disponibilidad"}<ArrowUpRight size={17} /></button><small className="form-footnote">La solicitud no confirma la cita. Solo se bloqueará el horario solicitado; otro profesional puede reservar el mismo vestido ese día si no existe solapamiento.</small></form></>}</section></div>;
 }
 
 function AdminLogin() {
