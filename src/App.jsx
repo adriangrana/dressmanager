@@ -235,7 +235,33 @@ function AdminGate() {
 function AdminShell({ user }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [requestCount, setRequestCount] = useState(0);
+  const [requestNotice, setRequestNotice] = useState("");
   const navigate = useNavigate();
+  useEffect(() => {
+    let previous = null;
+    let active = true;
+    const checkRequests = () => api("/api/admin/overview").then((data) => {
+      if (!active) return;
+      const next = Number(data.requests || 0);
+      if (previous !== null && next > previous) {
+        const added = next - previous;
+        setRequestNotice(added === 1 ? "Ha llegado una nueva solicitud de sesión." : `Han llegado ${added} nuevas solicitudes de sesión.`);
+      }
+      previous = next;
+      setRequestCount(next);
+    }).catch(() => {});
+    checkRequests();
+    const timer = window.setInterval(checkRequests, 60000);
+    const handleVisibility = () => { if (document.visibilityState === "visible") checkRequests(); };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", handleVisibility); };
+  }, []);
+  useEffect(() => {
+    if (!requestNotice) return undefined;
+    const timer = window.setTimeout(() => setRequestNotice(""), 7000);
+    return () => window.clearTimeout(timer);
+  }, [requestNotice]);
   async function logout() {
     setLoggingOut(true);
     try { await api("/api/auth/logout", { method: "POST" }); } finally { navigate("/admin/login", { replace: true }); }
@@ -243,12 +269,13 @@ function AdminShell({ user }) {
   const links = [
     { to: "/admin/resumen", label: "Resumen", icon: LayoutDashboard },
     { to: "/admin/vestidos", label: "Vestidos", icon: Shirt },
-    { to: "/admin/reservas", label: "Reservas", icon: CalendarDays },
+    { to: "/admin/reservas", label: "Reservas", icon: CalendarDays, badge: requestCount },
     { to: "/admin/finanzas", label: "Finanzas", icon: ChartPieIcon },
   ];
   return <div className="admin-app">
-    <aside className={`admin-sidebar ${menuOpen ? "sidebar-open" : ""}`}><Brand light /><span className="sidebar-label">GESTIÓN DEL ATELIER</span><nav>{links.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} onClick={() => setMenuOpen(false)} className={({ isActive }) => `admin-nav-link ${isActive ? "active" : ""}`}><Icon size={19} strokeWidth={1.9} /><span>{label}</span></NavLink>)}</nav><div className="sidebar-spacer" /><Link to="/" className="view-shop-link"><Eye size={18} /> Vista pública <ArrowUpRight size={15} /></Link><div className="admin-user"><span className="avatar">{user.email.slice(0, 1).toUpperCase()}</span><div><strong>Administrador</strong><small>{user.email}</small></div><button onClick={logout} disabled={loggingOut} title="Cerrar sesión" aria-label="Cerrar sesión"><LogOut size={17} /></button></div></aside>
+    <aside className={`admin-sidebar ${menuOpen ? "sidebar-open" : ""}`}><Brand light /><span className="sidebar-label">GESTIÓN DEL ATELIER</span><nav>{links.map(({ to, label, icon: Icon, badge }) => <NavLink key={to} to={to} onClick={() => setMenuOpen(false)} className={({ isActive }) => `admin-nav-link ${isActive ? "active" : ""}`}><Icon size={19} strokeWidth={1.9} /><span>{label}</span>{badge > 0 && <strong className="nav-notification-badge" aria-label={`${badge} solicitudes pendientes`}>{badge > 99 ? "99+" : badge}</strong>}</NavLink>)}</nav><div className="sidebar-spacer" /><Link to="/" className="view-shop-link"><Eye size={18} /> Vista pública <ArrowUpRight size={15} /></Link><div className="admin-user"><span className="avatar">{user.email.slice(0, 1).toUpperCase()}</span><div><strong>Administrador</strong><small>{user.email}</small></div><button onClick={logout} disabled={loggingOut} title="Cerrar sesión" aria-label="Cerrar sesión"><LogOut size={17} /></button></div></aside>
     <div className="admin-main"><header className="admin-topbar"><button className="mobile-nav-toggle" onClick={() => setMenuOpen((value) => !value)} aria-label="Abrir navegación"><Menu size={21} /></button><div className="admin-breadcrumb"><span>Tul en Foco</span><span>/</span><strong>{adminPageLabel(useLocation().pathname)}</strong></div><div className="admin-top-right"><span><i /> Sesión protegida</span><span className="today-date">{new Intl.DateTimeFormat("es-ES", { weekday: "short", day: "numeric", month: "short" }).format(new Date())}</span></div></header><div className="admin-content"><Outlet /></div></div>
+    {requestNotice && <Link to="/admin/reservas" className="request-toast"><CalendarDays size={18} /><span><strong>Nueva solicitud</strong><small>{requestNotice}</small></span><ArrowRight size={16} /></Link>}
   </div>;
 }
 
