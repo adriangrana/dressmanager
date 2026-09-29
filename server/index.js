@@ -562,6 +562,30 @@ app.get("/api/admin/export/bookings.csv", requireAdmin, (_req, res) => {
   res.send(csv);
 });
 
+app.get("/api/admin/export/finance.csv", requireAdmin, (_req, res) => {
+  const rows = db.prepare(`SELECT b.*, d.name AS dress_name
+    FROM bookings b JOIN dresses d ON d.id=b.dress_id
+    WHERE b.status='completed'
+    ORDER BY b.booking_date,b.start_time`).all();
+  const header = ["Fecha","Vestido","Estudio / fotógrafo","Estado cobro","Bruto","IVA","Base sin IVA","Ayudante real","Mantenimiento / reparación real","Beneficio repartible","Mitad por socio"];
+  const lines = rows.map((row) => {
+    const gross = Number(row.gross || 0);
+    const vat = Number(row.vat || 0);
+    const helper = Number(row.helper_cost || 0);
+    const maintenance = Number(row.maintenance || 0);
+    const profit = gross - vat - helper - maintenance;
+    return [
+      row.booking_date, row.dress_name, row.studio_name || row.customer_name, row.payment_status || "pending",
+      gross.toFixed(2), vat.toFixed(2), (gross - vat).toFixed(2), helper.toFixed(2), maintenance.toFixed(2),
+      profit.toFixed(2), (profit / 2).toFixed(2),
+    ].map(csvCell).join(",");
+  });
+  const csv = "\ufeff" + [header.map(csvCell).join(","), ...lines].join("\n");
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="tul-en-foco-finanzas-${new Date().toISOString().slice(0,10)}.csv"`);
+  res.send(csv);
+});
+
 app.get("/api/admin/backup.zip", requireAdmin, async (_req, res, next) => {
   const tempDb = path.join(DATA_DIR, `backup-${randomUUID()}.sqlite`);
   try {
