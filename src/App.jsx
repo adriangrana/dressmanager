@@ -30,6 +30,17 @@ const economicsFor = (dress, type, minutes, settings = DEFAULT_SETTINGS) => {
 const durationLabel = (minutes) => minutes % 60 ? `${Math.floor(minutes / 60)} h 30 min`.replace(/^0 h /, "30 min") : `${minutes / 60} ${minutes === 60 ? "hora" : "horas"}`;
 const durationOptions = (type) => type === "interior" ? Array.from({ length: 12 }, (_, i) => 30 * (i + 1)) : Array.from({ length: 8 }, (_, i) => 60 * (i + 1));
 const typeLabel = (type) => type === "interior" ? "Interior" : "Exterior";
+const timeOptions = Array.from({ length: 32 }, (_, index) => {
+  const total = 7 * 60 + index * 30;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+});
+const addMinutesToTime = (time, minutes) => {
+  const [hours, mins] = String(time || "10:00").split(":").map(Number);
+  const total = hours * 60 + mins + Number(minutes || 0);
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+};
+const bookingTimeLabel = (booking) => `${booking.startTime || "10:00"}–${booking.endTime || addMinutesToTime(booking.startTime || "10:00", booking.durationMinutes)}`;
+const paymentLabel = (status) => status === "paid" ? "Cobrada" : "Pendiente de cobro";
 
 function Brand({ light = false }) {
   return <Link className={`brand-lockup ${light ? "brand-light" : ""}`} to="/" aria-label="Tul en Foco, inicio">
@@ -88,9 +99,9 @@ function PublicShop() {
     <main>
       <section className="landing-hero">
         <div className="landing-copy">
-          <span className="kicker"><i /> VESTIDOS DE QUINCEAÑERA</span>
+          <span className="kicker"><i /> VESTUARIO PARA ESTUDIOS Y FOTÓGRAFOS</span>
           <h1>Un día para<br />recordar <em>siempre.</em></h1>
-          <p>Vestidos extraordinarios para sesiones fotográficas de quinceañera, con uso supervisado por el equipo del estudio.</p>
+          <p>Servicio de vestuario para profesionales de fotografía: vestidos de quinceañera para sesiones en estudio o exterior, siempre con uso supervisado.</p>
           <div className="hero-buttons"><a href="#coleccion" className="button button-dark">Explorar la colección <ArrowRight size={17} /></a><span>Sesiones desde <strong>{formatMoney(tariffFor(featured, "interior").price)}</strong></span></div>
           <div className="hero-assurance"><span><CircleCheck size={17} /> Prueba en el atelier</span><span><Sparkles size={17} /> Atención personal</span></div>
         </div>
@@ -104,16 +115,16 @@ function PublicShop() {
       <section className="collection-section" id="coleccion">
         <div className="section-heading">
           <div><span className="kicker"><i /> NUESTRA SELECCIÓN</span><h2>Tu historia. <em>Tu vestido.</em></h2></div>
-          <p>Una colección cuidada para que<br />cada celebración sea inolvidable.</p>
+          <p>Una colección profesional para que<br />cada producción tenga una pieza especial.</p>
         </div>
         <div className="collection-tools"><label className="search-field"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre o color" /></label><label className="category-filter"><span>Categoría</span><select value={category} onChange={(event) => setCategory(event.target.value)}><option>Todas</option>{categories.map((item) => <option key={item}>{item}</option>)}</select></label><span>{loading ? "Cargando colección…" : `${filtered.length} ${filtered.length === 1 ? "vestido" : "vestidos"}`}</span></div>
         {notice && <div className="inline-error">{notice}</div>}
         {loading ? <div className="loading-card">Preparando la colección…</div> : filtered.length ? <div className="public-dress-grid">{filtered.map((dress) => <PublicDressCard key={dress.id} dress={dress} onOpen={() => setSelected(dress)} onBook={() => setBookingDress(dress)} />)}</div> : <div className="empty-public"><Shirt size={31} /><strong>Estamos preparando nuevas piezas.</strong><span>Vuelve pronto para descubrir la colección.</span></div>}
       </section>
 
-      <section className="atelier-strip" id="atelier"><span className="strip-icon"><Sparkles size={22} /></span><div><span className="kicker">SESIÓN FOTOGRÁFICA SUPERVISADA</span><h2>Un vestido especial para una historia irrepetible.</h2></div><p>El estudio coordina el uso en interior o exterior; el vestido permanece bajo supervisión del equipo fotográfico.</p>{featured && <button className="button button-outline" onClick={() => setBookingDress(featured)}>Consultar sesión <ArrowUpRight size={17} /></button>}</section>
+      <section className="atelier-strip" id="atelier"><span className="strip-icon"><Sparkles size={22} /></span><div><span className="kicker">SERVICIO PROFESIONAL · USO SUPERVISADO</span><h2>Un vestido especial para una historia irrepetible.</h2></div><p>Pensado para estudios y fotógrafos profesionales. Coordinamos horario, duración y uso en interior o exterior; el vestido permanece bajo supervisión.</p>{featured && <button className="button button-outline" onClick={() => setBookingDress(featured)}>Consultar sesión <ArrowUpRight size={17} /></button>}</section>
     </main>
-    <footer className="public-footer"><Brand /><span>Vestidos extraordinarios para sesiones inolvidables.</span><span>© Tul en Foco</span></footer>
+    <footer className="public-footer"><Brand /><span>Vestuario profesional para sesiones fotográficas.</span><span>© Tul en Foco</span></footer>
 
     {selected && <DressDetail dress={selected} onClose={() => setSelected(null)} onBook={() => { setBookingDress(selected); setSelected(null); }} />}
     {bookingDress && <PublicBookingModal dress={bookingDress} onClose={() => setBookingDress(null)} />}
