@@ -560,7 +560,7 @@ function BookingEditModal({ booking, dresses, onClose, onSaved }) {
 
 function StudioProfiles({ bookings }) {
   const studios = useMemo(() => {
-    const normalizeStudioKey = (value) => String(value || "Sin nombre")
+    const normalizeText = (value) => String(value || "")
       .normalize("NFKD")
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/[\u200B-\u200D\uFEFF]/g, "")
@@ -568,27 +568,58 @@ function StudioProfiles({ bookings }) {
       .replace(/[^a-z0-9]+/g, " ")
       .trim()
       .replace(/\s+/g, " ");
-    const cleanStudioName = (value) => String(value || "Sin nombre")
+    const cleanText = (value) => String(value || "")
       .replace(/[\u200B-\u200D\uFEFF]/g, "")
       .replace(/\s+/g, " ")
       .trim();
+    const normalizePhone = (value) => String(value || "").replace(/\D/g, "");
 
-    const map = new Map();
+    const profiles = [];
     for (const booking of bookings) {
-      const displayName = cleanStudioName(booking.studioName || booking.name);
-      const key = normalizeStudioKey(displayName);
-      if (!map.has(key)) map.set(key, { name: displayName, phone: "", contact: "", sessions: [], paid: 0, outstanding: 0 });
-      const studio = map.get(key);
-      if (booking.phone) studio.phone = booking.phone;
-      if (booking.contactName) studio.contact = booking.contactName;
+      const displayName = cleanText(booking.studioName || booking.name) || "Sin nombre";
+      const nameKey = normalizeText(displayName);
+      const phone = cleanText(booking.phone);
+      const phoneKey = normalizePhone(phone);
+      const contact = cleanText(booking.contactName);
+      const contactKey = normalizeText(contact);
+
+      let studio = profiles.find((profile) =>
+        (nameKey && profile.nameKeys.has(nameKey))
+        || (phoneKey.length >= 7 && profile.phoneKeys.has(phoneKey))
+        || (contactKey && phoneKey.length >= 7 && profile.contactPhoneKeys.has(`${contactKey}:${phoneKey}`))
+      );
+
+      if (!studio) {
+        studio = {
+          id: `studio-${profiles.length + 1}`,
+          name: displayName,
+          phone: "",
+          contact: "",
+          sessions: [],
+          paid: 0,
+          outstanding: 0,
+          nameKeys: new Set(),
+          phoneKeys: new Set(),
+          contactPhoneKeys: new Set(),
+        };
+        profiles.push(studio);
+      }
+
+      if (nameKey) studio.nameKeys.add(nameKey);
+      if (phoneKey.length >= 7) studio.phoneKeys.add(phoneKey);
+      if (contactKey && phoneKey.length >= 7) studio.contactPhoneKeys.add(`${contactKey}:${phoneKey}`);
+      if (phone) studio.phone = phone;
+      if (contact) studio.contact = contact;
       studio.sessions.push(booking);
       if (booking.status === "completed" && booking.paymentStatus === "paid") studio.paid += Number(booking.gross || 0);
       if (booking.status === "completed" && booking.paymentStatus !== "paid") studio.outstanding += Number(booking.gross || 0);
     }
-    return [...map.values()].sort((a, b) => b.sessions.length - a.sessions.length || a.name.localeCompare(b.name, "es"));
+
+    return profiles.sort((a, b) => b.sessions.length - a.sessions.length || a.name.localeCompare(b.name, "es"));
   }, [bookings]);
+
   if (!studios.length) return null;
-  return <section className="admin-panel studio-profiles"><div className="panel-title-row"><div><span className="kicker">ESTUDIOS Y FOTÓGRAFOS</span><h2>Clientes profesionales</h2></div><span className="table-counter">{studios.length} contactos</span></div><div className="studio-profile-grid">{studios.map((studio) => <details className="studio-profile-card" key={studio.name}><summary><div><strong>{studio.name}</strong><span>{studio.contact || "Sin persona de contacto"}{studio.phone ? ` · ${studio.phone}` : ""}</span></div><div><strong>{studio.sessions.length}</strong><span>{studio.sessions.length === 1 ? "sesión" : "sesiones"}</span></div></summary><div className="studio-profile-totals"><span>Cobrado <strong>{formatMoney(studio.paid)}</strong></span><span>Pendiente <strong>{formatMoney(studio.outstanding)}</strong></span></div><div className="studio-history">{studio.sessions.slice(0, 8).map((booking) => <div key={booking.id}><span>{formatDate(booking.date)} · {bookingTimeLabel(booking)}</span><strong>{booking.dressName}</strong><small>{typeLabel(booking.sessionType)} · {formatMoney(booking.gross)} · {booking.status === "completed" ? paymentLabel(booking.paymentStatus) : ({ requested: "Solicitud", confirmed: "Confirmada", cancelled: "Cancelada" }[booking.status] || booking.status)}</small></div>)}</div></details>)}</div></section>;
+  return <section className="admin-panel studio-profiles"><div className="panel-title-row"><div><span className="kicker">ESTUDIOS Y FOTÓGRAFOS</span><h2>Clientes profesionales</h2></div><span className="table-counter">{studios.length} contactos</span></div><div className="studio-profile-grid">{studios.map((studio) => <details className="studio-profile-card" key={studio.id}><summary><div><strong>{studio.name}</strong><span>{studio.contact || "Sin persona de contacto"}{studio.phone ? ` · ${studio.phone}` : ""}</span></div><div><strong>{studio.sessions.length}</strong><span>{studio.sessions.length === 1 ? "sesión" : "sesiones"}</span></div></summary><div className="studio-profile-totals"><span>Cobrado <strong>{formatMoney(studio.paid)}</strong></span><span>Pendiente <strong>{formatMoney(studio.outstanding)}</strong></span></div><div className="studio-history">{studio.sessions.slice(0, 8).map((booking) => <div key={booking.id}><span>{formatDate(booking.date)} · {bookingTimeLabel(booking)}</span><strong>{booking.dressName}</strong><small>{typeLabel(booking.sessionType)} · {formatMoney(booking.gross)} · {booking.status === "completed" ? paymentLabel(booking.paymentStatus) : ({ requested: "Solicitud", confirmed: "Confirmada", cancelled: "Cancelada" }[booking.status] || booking.status)}</small></div>)}</div></details>)}</div></section>;
 }
 
 function StatusBadge({ status }) {
