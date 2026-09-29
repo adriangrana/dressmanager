@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive, ArrowDownRight, ArrowRight, ArrowUpRight, BadgeEuro, Banknote, CalendarCheck,
@@ -323,7 +324,7 @@ function InventoryGallery({ dress }) {
       </div>}
       <button type="button" className="inventory-card-view" onClick={() => setLightboxOpen(true)}><Eye size={16} /> Ver vestido</button>
     </div>
-    {lightboxOpen && <InventoryDressPreview dress={dress} images={images} activeImage={activeImage} setActiveImage={setActiveImage} onClose={() => setLightboxOpen(false)} />}
+    {lightboxOpen && createPortal(<InventoryDressPreview dress={dress} images={images} activeImage={activeImage} setActiveImage={setActiveImage} onClose={() => setLightboxOpen(false)} />, document.body)}
   </div>;
 }
 
