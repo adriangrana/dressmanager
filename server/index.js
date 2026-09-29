@@ -6,10 +6,10 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import multer from "multer";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { calculateRental, db, ensureAdmin, getSettings, PUBLIC_DIR, ROOT } from "./db.js";
+import { calculateRental, db, ensureAdmin, getSettings, DATA_DIR, PUBLIC_DIR, ROOT } from "./db.js";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -95,15 +95,25 @@ function publicDress(row) {
     sizeLabel: row.size_label,
     sizeRange: row.size_range,
     tariffs: {
-      interior: { price: row.interior_price, includedMinutes: row.interior_included_minutes, extraPrice: row.interior_extra_30m, extraMinutes: 30, maintenance: row.interior_maintenance },
-      exterior: { price: row.exterior_price, includedMinutes: row.exterior_included_minutes, extraPrice: row.exterior_extra_hour, extraMinutes: 60, maintenance: row.exterior_maintenance },
+      interior: { price: row.interior_price, includedMinutes: row.interior_included_minutes, extraPrice: row.interior_extra_30m, extraMinutes: 30 },
+      exterior: { price: row.exterior_price, includedMinutes: row.exterior_included_minutes, extraPrice: row.exterior_extra_hour, extraMinutes: 60 },
     },
     images: JSON.parse(row.images || "[]"),
   };
 }
 
 function adminDress(row) {
-  return { ...publicDress(row), purchaseCost: row.purchase_cost, active: Boolean(row.active), createdAt: row.created_at };
+  const dress = publicDress(row);
+  return {
+    ...dress,
+    tariffs: {
+      interior: { ...dress.tariffs.interior, maintenance: row.interior_maintenance },
+      exterior: { ...dress.tariffs.exterior, maintenance: row.exterior_maintenance },
+    },
+    purchaseCost: row.purchase_cost,
+    active: Boolean(row.active),
+    createdAt: row.created_at,
+  };
 }
 
 function cleanText(value, maxLength = 160) {
@@ -140,6 +150,44 @@ function validateDate(value, allowPast = false) {
   return date;
 }
 
+function validateTime(value) {
+  const time = cleanText(value, 5);
+  const match = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!match) throw new Error("Selecciona una hora válida.");
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59 || minutes % 30 !== 0) throw new Error("La hora debe estar en bloques de 30 minutos.");
+  return time;
+}
+
+function timeToMinutes(value) {
+  const [hours, minutes] = String(value || "00:00").split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesToTime(value) {
+  const safe = Math.max(0, Math.min(24 * 60, Number(value) || 0));
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function bookingEndTime(startTime, durationMinutes) {
+  return minutesToTime(timeToMinutes(startTime) + Number(durationMinutes));
+}
+
+function hasBookingConflict(dressId, date, startTime, durationMinutes, excludeId = "") {
+  const start = timeToMinutes(startTime);
+  const end = start + Number(durationMinutes);
+  if (end > 24 * 60) throw new Error("La sesión no puede terminar después de medianoche.");
+  const rows = db.prepare("SELECT id,start_time,duration_minutes FROM bookings WHERE dress_id=? AND booking_date=? AND status IN ('requested','confirmed','completed') AND id<>?").all(dressId, date, excludeId);
+  return rows.some((row) => {
+    const currentStart = timeToMinutes(row.start_time || "10:00");
+    const currentEnd = currentStart + Number(row.duration_minutes || 120);
+    return start < currentEnd && end > currentStart;
+  });
+}
+
 function safeSlug(value) {
   return cleanText(value, 80).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "vestido";
 }
@@ -160,6 +208,60 @@ const upload = multer({
     callback(null, true);
   },
 });
+
+function csvCell(value) {
+  const textValue = String(value ?? "");
+  return /[",\n]/.test(textValue) ? `"${textValue.replace(/"/g, '""')}"` : textValue;
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createStoredZip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name.replace(/\\/g, "/"));
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data);
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 6); local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(0, 10); local.writeUInt16LE(0, 12); local.writeUInt32LE(crc, 14); local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22); local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
+    locals.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10); central.writeUInt16LE(0, 12); central.writeUInt16LE(0, 14); central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30); central.writeUInt16LE(0, 32); central.writeUInt16LE(0, 34); central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38); central.writeUInt32LE(offset, 42);
+    centrals.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(0, 4); end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16); end.writeUInt16LE(0, 20);
+  return Buffer.concat([...locals, ...centrals, end]);
+}
+
+function collectUploadEntries(root, prefix = "uploads") {
+  if (!existsSync(root)) return [];
+  return readdirSync(root).flatMap((name) => {
+    const fullPath = path.join(root, name);
+    const zipName = `${prefix}/${name}`;
+    return statSync(fullPath).isDirectory() ? collectUploadEntries(fullPath, zipName) : [{ name: zipName, data: readFileSync(fullPath) }];
+  });
+}
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
