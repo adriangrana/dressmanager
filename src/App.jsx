@@ -560,10 +560,24 @@ function BookingEditModal({ booking, dresses, onClose, onSaved }) {
 
 function StudioProfiles({ bookings }) {
   const studios = useMemo(() => {
+    const normalizeStudioKey = (value) => String(value || "Sin nombre")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .toLocaleLowerCase("es")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .replace(/\s+/g, " ");
+    const cleanStudioName = (value) => String(value || "Sin nombre")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
     const map = new Map();
     for (const booking of bookings) {
-      const key = (booking.studioName || booking.name || "Sin nombre").trim();
-      if (!map.has(key)) map.set(key, { name: key, phone: "", contact: "", sessions: [], paid: 0, outstanding: 0 });
+      const displayName = cleanStudioName(booking.studioName || booking.name);
+      const key = normalizeStudioKey(displayName);
+      if (!map.has(key)) map.set(key, { name: displayName, phone: "", contact: "", sessions: [], paid: 0, outstanding: 0 });
       const studio = map.get(key);
       if (booking.phone) studio.phone = booking.phone;
       if (booking.contactName) studio.contact = booking.contactName;
