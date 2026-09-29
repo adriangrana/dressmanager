@@ -515,10 +515,9 @@ app.patch("/api/admin/bookings/:id", requireAdmin, (req, res) => {
     if (!["pending", "paid"].includes(paymentStatus)) throw new Error("Selecciona un estado de cobro válido.");
     if (!Number.isInteger(durationMinutes) || durationMinutes < 30 || durationMinutes > 720 || durationMinutes % 30 !== 0) throw new Error("Selecciona una duración válida en bloques de 30 minutos.");
     if (booking.status !== "cancelled" && hasBookingConflict(dressId, date, startTime, durationMinutes, booking.id)) return res.status(409).json({ error: "Ese vestido ya está ocupado en ese horario." });
-    const calculated = calculateRental(dress, sessionType, durationMinutes);
     const gross = req.body?.gross === undefined ? Number(booking.gross) : validMoney(req.body.gross, "cobrado");
-    const helperCost = req.body?.helperCost === undefined ? Number(calculated.helperCost) : validMoney(req.body.helperCost, "de ayudante");
-    const maintenance = req.body?.maintenance === undefined ? Number(calculated.maintenance) : validMoney(req.body.maintenance, "de lavandería / mantenimiento");
+    const helperCost = req.body?.helperCost === undefined ? Number(booking.helper_cost) : validMoney(req.body.helperCost, "de ayudante");
+    const maintenance = req.body?.maintenance === undefined ? Number(booking.maintenance) : validMoney(req.body.maintenance, "de lavandería / mantenimiento");
     const vatRate = Number(getSettings().vat_rate);
     const vat = gross - gross / (1 + vatRate);
     const paidAt = paymentStatus === "paid" ? (booking.paid_at || new Date().toISOString()) : null;
