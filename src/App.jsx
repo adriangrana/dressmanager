@@ -473,17 +473,42 @@ function AdminBookingModal({ dresses, onClose, onSaved }) {
   const [dressId, setDressId] = useState(dresses[0]?.id || "");
   const [sessionType, setSessionType] = useState("exterior");
   const [durationMinutes, setDurationMinutes] = useState(120);
+  const [startTime, setStartTime] = useState("10:00");
+  const [paymentStatus, setPaymentStatus] = useState("pending");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const dress = dresses.find((item) => item.id === dressId);
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError("");
     const form = new FormData(event.currentTarget);
-    try { await api("/api/admin/bookings", { method: "POST", body: JSON.stringify({ dressId, studioName: form.get("studioName"), contactName: form.get("contactName"), phone: form.get("phone"), date: form.get("date"), sessionType, durationMinutes }) }); onSaved(); }
-    catch (caught) { setError(caught.message); }
+    try {
+      await api("/api/admin/bookings", { method: "POST", body: JSON.stringify({
+        dressId,
+        studioName: form.get("studioName"),
+        contactName: form.get("contactName"),
+        phone: form.get("phone"),
+        date: form.get("date"),
+        startTime,
+        sessionType,
+        durationMinutes,
+        paymentStatus,
+        notes: form.get("notes"),
+      }) });
+      onSaved();
+    } catch (caught) { setError(caught.message); }
     finally { setBusy(false); }
   }
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="form-modal" role="dialog" aria-modal="true" aria-labelledby="rental-modal-title"><button className="close-button" onClick={onClose} aria-label="Cerrar"><X size={21} /></button><span className="kicker"><i /> REGISTRO PRIVADO</span><h2 id="rental-modal-title">Registrar sesión.</h2><p>La sesión queda registrada como realizada y entra en tus totales financieros.</p>{dresses.length ? <form onSubmit={submit} className="form-stack"><label>Vestido<select value={dressId} onChange={(event) => setDressId(event.target.value)}>{dresses.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.color}</option>)}</select></label><label>Estudio fotográfico o fotógrafo<input name="studioName" required minLength="2" maxLength="120" placeholder="Nombre del estudio o profesional" /></label><label>Persona de contacto<input name="contactName" maxLength="100" placeholder="Opcional" /></label><div className="form-columns"><label>Tipo de sesión<select value={sessionType} onChange={(event) => { const next = event.target.value; setSessionType(next); setDurationMinutes(next === "interior" ? 30 : 120); }}><option value="interior">Interior</option><option value="exterior">Exterior</option></select></label><label>Duración<select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>{durationOptions(sessionType).map((value) => <option key={value} value={value}>{durationLabel(value)}</option>)}</select></label></div><div className="form-columns"><label>Fecha<input name="date" type="date" max={localDate()} defaultValue={localDate()} required /></label><label>Teléfono<input name="phone" type="tel" maxLength="40" placeholder="Opcional" /></label></div>{dress && <div className="modal-total"><span>Sesión {typeLabel(sessionType)} · IVA incluido</span><strong>{formatMoney(priceFor(dress, sessionType, durationMinutes))}</strong></div>}{error && <div className="form-error"><Info size={16} />{error}</div>}<button className="button button-dark button-wide" disabled={busy}>{busy ? "Guardando…" : "Registrar sesión realizada"}<Check size={17} /></button></form> : <div className="empty-admin"><Shirt size={28} /><strong>No hay vestidos con tarifas completas.</strong><span>Completa las tarifas del vestido para poder registrar una sesión.</span></div>}</section></div>;
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="form-modal" role="dialog" aria-modal="true" aria-labelledby="rental-modal-title"><button className="close-button" onClick={onClose} aria-label="Cerrar"><X size={21} /></button><span className="kicker"><i /> REGISTRO PRIVADO</span><h2 id="rental-modal-title">Registrar sesión.</h2><p>Registra una sesión ya realizada. Puedes indicar si está cobrada o todavía pendiente.</p>{dresses.length ? <form onSubmit={submit} className="form-stack">
+    <label>Vestido<select value={dressId} onChange={(event) => setDressId(event.target.value)}>{dresses.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.color}</option>)}</select></label>
+    <label>Estudio fotográfico o fotógrafo<input name="studioName" required minLength="2" maxLength="120" placeholder="Nombre del estudio o profesional" /></label>
+    <label>Persona de contacto<input name="contactName" maxLength="100" placeholder="Opcional" /></label>
+    <div className="form-columns"><label>Tipo de sesión<select value={sessionType} onChange={(event) => { const next = event.target.value; setSessionType(next); setDurationMinutes(dress ? tariffFor(dress, next).includedMinutes : (next === "interior" ? 30 : 120)); }}><option value="interior">Interior{dress ? ` · ${formatMoney(tariffFor(dress, "interior").price)}` : ""}</option><option value="exterior">Exterior{dress ? ` · ${formatMoney(tariffFor(dress, "exterior").price)}` : ""}</option></select></label><label>Duración<select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>{durationOptions(sessionType).map((value) => <option key={value} value={value}>{durationLabel(value)}</option>)}</select></label></div>
+    <div className="form-columns"><label>Fecha<input name="date" type="date" max={localDate()} defaultValue={localDate()} required /></label><label>Hora de inicio<select value={startTime} onChange={(event) => setStartTime(event.target.value)}>{timeOptions.map((time) => <option key={time}>{time}</option>)}</select></label></div>
+    <div className="form-columns"><label>Teléfono<input name="phone" type="tel" maxLength="40" placeholder="Opcional" /></label><label>Estado del cobro<select value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="pending">Pendiente de cobro</option><option value="paid">Cobrada</option></select></label></div>
+    <label>Notas / gastos extraordinarios<textarea name="notes" rows="2" maxLength="1000" placeholder="Ej. reparación de pedrería, incidencia, acuerdo con el estudio…" /></label>
+    {dress && <div className="modal-total"><span>Sesión {typeLabel(sessionType)} · {startTime}–{addMinutesToTime(startTime, durationMinutes)} · IVA incluido</span><strong>{formatMoney(priceFor(dress, sessionType, durationMinutes))}</strong></div>}
+    {error && <div className="form-error"><Info size={16} />{error}</div>}<button className="button button-dark button-wide" disabled={busy}>{busy ? "Guardando…" : "Registrar sesión realizada"}<Check size={17} /></button>
+  </form> : <div className="empty-admin"><Shirt size={28} /><strong>No hay vestidos con tarifas completas.</strong><span>Completa las tarifas del vestido para poder registrar una sesión.</span></div>}</section></div>;
 }
 
 function AdminFinance() {
