@@ -317,8 +317,9 @@ function AdminDashboard() {
 }
 
 function BookingLine({ booking }) {
-  const state = { requested: "Solicitud", confirmed: "Confirmada", completed: "Completada", cancelled: "Cancelada" }[booking.status];
-  return <div className="booking-line"><span className={`booking-status-dot ${booking.status}`} /><div><strong>{booking.studioName || booking.name}</strong><small>{booking.dressName} · {typeLabel(booking.sessionType)} · {state}</small></div><span>{formatDate(booking.date)}</span><strong>{formatMoney(booking.gross)}</strong></div>;
+  const state = { requested: "Solicitud", confirmed: "Confirmada", completed: "Realizada", cancelled: "Cancelada" }[booking.status];
+  const payment = booking.status === "completed" ? ` · ${paymentLabel(booking.paymentStatus)}` : "";
+  return <div className="booking-line"><span className={`booking-status-dot ${booking.status}`} /><div><strong>{booking.studioName || booking.name}</strong><small>{booking.dressName} · {typeLabel(booking.sessionType)} · {state}{payment}</small></div><span>{formatDate(booking.date)} · {bookingTimeLabel(booking)}</span><strong>{formatMoney(booking.gross)}</strong></div>;
 }
 
 function AdminDresses() {
@@ -569,7 +570,7 @@ function StudioProfiles({ bookings }) {
 }
 
 function StatusBadge({ status }) {
-  const content = { requested: ["Solicitud", Clock3], confirmed: ["Confirmada", CalendarCheck], completed: ["Completada", CircleCheck], cancelled: ["Cancelada", XCircle] }[status] || [status, Info];
+  const content = { requested: ["Solicitud", Clock3], confirmed: ["Confirmada", CalendarCheck], completed: ["Realizada", CircleCheck], cancelled: ["Cancelada", XCircle] }[status] || [status, Info];
   const [label, Icon] = content;
   return <span className={`status-badge ${status}`}><Icon size={15} />{label}</span>;
 }
