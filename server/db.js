@@ -102,6 +102,13 @@ for (const [column, definition] of Object.entries({
   paid_at: "TEXT", notes: "TEXT NOT NULL DEFAULT ''",
 })) ensureColumn("bookings", column, definition);
 
+// Preserve the accounting meaning of sessions completed before payment tracking existed.
+const paymentMigration = db.prepare("SELECT value FROM settings WHERE key='booking_payment_migration_v1'").get();
+if (!paymentMigration) {
+  db.prepare("UPDATE bookings SET payment_status='paid', paid_at=COALESCE(paid_at,created_at) WHERE status='completed'").run();
+  db.prepare("INSERT INTO settings(key,value) VALUES('booking_payment_migration_v1',1)").run();
+}
+
 const defaultSettings = {
   vat_rate: 0.21,
   helper_hourly_cost: 20,
