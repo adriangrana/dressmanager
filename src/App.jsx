@@ -442,8 +442,12 @@ function AdminBookings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showModal, setShowModal] = useState(false);
+  const [editingBooking, setEditingBooking] = useState(null);
   const [pending, setPending] = useState("");
-  const load = () => Promise.all([api("/api/admin/bookings"), api("/api/admin/dresses")]).then(([bookingData, dressData]) => { setBookings(bookingData.bookings); setDresses(dressData.dresses.filter((dress) => dress.active && isPriced(dress))); }).catch((caught) => setError(caught.message)).finally(() => setLoading(false));
+  const load = () => Promise.all([api("/api/admin/bookings"), api("/api/admin/dresses")]).then(([bookingData, dressData]) => {
+    setBookings(bookingData.bookings);
+    setDresses(dressData.dresses);
+  }).catch((caught) => setError(caught.message)).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
   async function changeStatus(booking, status) {
     setPending(booking.id); setError("");
@@ -451,16 +455,90 @@ function AdminBookings() {
     catch (caught) { setError(caught.message); }
     finally { setPending(""); }
   }
+  async function markPaid(booking) {
+    setPending(booking.id); setError("");
+    try { await api(`/api/admin/bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({ paymentStatus: "paid" }) }); await load(); }
+    catch (caught) { setError(caught.message); }
+    finally { setPending(""); }
+  }
   const requests = bookings.filter((booking) => booking.status === "requested").length;
   const confirmed = bookings.filter((booking) => booking.status === "confirmed").length;
-  const income = bookings.filter((booking) => booking.status === "completed").reduce((sum, booking) => sum + booking.gross, 0);
+  const paidIncome = bookings.filter((booking) => booking.status === "completed" && booking.paymentStatus === "paid").reduce((sum, booking) => sum + Number(booking.gross || 0), 0);
+  const outstanding = bookings.filter((booking) => booking.status === "completed" && booking.paymentStatus !== "paid").reduce((sum, booking) => sum + Number(booking.gross || 0), 0);
+  const bookableDresses = dresses.filter((dress) => dress.active && isPriced(dress));
   return <>
-    <PageHeading eyebrow="CALENDARIO DEL ATELIER" title="Citas y" emphasis="celebraciones." subtitle="Coordina solicitudes con estudios y registra sesiones fotográficas supervisadas." action={<button className="button button-dark" onClick={() => setShowModal(true)}><Plus size={18} /> Registrar sesión</button>} />
+    <PageHeading eyebrow="CALENDARIO DEL ATELIER" title="Citas y" emphasis="celebraciones." subtitle="Coordina horarios, solicitudes, sesiones realizadas y cobros." action={<button className="button button-dark" onClick={() => setShowModal(true)}><Plus size={18} /> Registrar sesión</button>} />
     {error && <div className="inline-error">{error}</div>}
-    <div className="booking-stats"><StatCard icon={Clock3} label="Por revisar" value={String(requests).padStart(2, "0")} detail="Solicitudes de estudios" /><StatCard icon={CalendarCheck} label="Confirmadas" value={String(confirmed).padStart(2, "0")} detail="Próximas sesiones" /><StatCard icon={Banknote} label="Ingresos completados" value={formatMoney(income)} detail="Sesiones realizadas" tone="stat-highlight" /></div>
-    <section className="admin-panel agenda-panel"><div className="panel-title-row"><div><span className="kicker">AGENDA E HISTORIAL</span><h2>Sesiones fotográficas</h2></div><span className="table-counter">{bookings.length} registros</span></div>{loading ? <div className="loading-card">Cargando agenda…</div> : bookings.length ? <div className="booking-table"><div className="booking-table-head"><span>ESTUDIO / VESTIDO</span><span>FECHA</span><span>SESIÓN / TIEMPO</span><span>IMPORTE</span><span>ESTADO / ACCIONES</span></div>{bookings.map((booking) => <div className="booking-table-row" key={booking.id}><div className="booking-person"><strong>{booking.studioName || booking.name}</strong><small>{booking.contactName ? `${booking.contactName} · ` : ""}{booking.dressName} · {booking.phone || "Sin teléfono"}</small></div><span>{formatDate(booking.date)}</span><span>{typeLabel(booking.sessionType)} · {durationLabel(booking.durationMinutes)}</span><strong>{formatMoney(booking.gross)}</strong><div className="booking-actions"><StatusBadge status={booking.status} />{booking.status === "requested" && <><button className="small-action confirm" disabled={pending === booking.id} onClick={() => changeStatus(booking, "confirmed")}><Check size={15} /> Confirmar</button><button className="small-action cancel" disabled={pending === booking.id} onClick={() => changeStatus(booking, "cancelled")} aria-label="Cancelar solicitud"><X size={16} /></button></>}{booking.status === "confirmed" && <><button className="small-action confirm" disabled={pending === booking.id} onClick={() => changeStatus(booking, "completed")}><Check size={15} /> Marcar realizada</button><button className="small-action cancel" disabled={pending === booking.id} onClick={() => changeStatus(booking, "cancelled")} aria-label="Cancelar solicitud"><X size={16} /></button></>}</div></div>)}</div> : <div className="empty-admin"><CalendarDays size={30} /><strong>La agenda está libre por ahora.</strong><span>Las solicitudes de estudios y fotógrafos aparecerán aquí.</span></div>}</section>
-    {showModal && <AdminBookingModal dresses={dresses} onClose={() => setShowModal(false)} onSaved={() => { setShowModal(false); load(); }} />}
+    <div className="booking-stats"><StatCard icon={Clock3} label="Por revisar" value={String(requests).padStart(2, "0")} detail="Solicitudes de estudios" /><StatCard icon={CalendarCheck} label="Confirmadas" value={String(confirmed).padStart(2, "0")} detail="Próximas sesiones" /><StatCard icon={Banknote} label="Cobrado" value={formatMoney(paidIncome)} detail={outstanding > 0 ? `${formatMoney(outstanding)} pendiente de cobro` : "Sin cobros pendientes"} tone="stat-highlight" /></div>
+    <section className="admin-panel agenda-panel"><div className="panel-title-row"><div><span className="kicker">AGENDA E HISTORIAL</span><h2>Sesiones fotográficas</h2></div><span className="table-counter">{bookings.length} registros</span></div>{loading ? <div className="loading-card">Cargando agenda…</div> : bookings.length ? <div className="booking-table"><div className="booking-table-head"><span>ESTUDIO / VESTIDO</span><span>FECHA / HORA</span><span>SESIÓN / TIEMPO</span><span>IMPORTE</span><span>ESTADO / ACCIONES</span></div>{bookings.map((booking) => <div className="booking-table-row" key={booking.id}><div className="booking-person"><strong>{booking.studioName || booking.name}</strong><small>{booking.contactName ? `${booking.contactName} · ` : ""}{booking.dressName} · {booking.phone || "Sin teléfono"}</small></div><span>{formatDate(booking.date)} · {bookingTimeLabel(booking)}</span><span>{typeLabel(booking.sessionType)} · {durationLabel(booking.durationMinutes)}</span><strong>{formatMoney(booking.gross)}</strong><div className="booking-actions"><StatusBadge status={booking.status} /><span className={`payment-badge ${booking.paymentStatus === "paid" ? "paid" : "pending"}`}>{paymentLabel(booking.paymentStatus)}</span><button className="small-action" disabled={pending === booking.id} onClick={() => setEditingBooking(booking)}>Editar</button>{booking.status === "requested" && <><button className="small-action confirm" disabled={pending === booking.id} onClick={() => changeStatus(booking, "confirmed")}><Check size={15} /> Confirmar</button><button className="small-action cancel" disabled={pending === booking.id} onClick={() => changeStatus(booking, "cancelled")} aria-label="Cancelar solicitud"><X size={16} /></button></>}{booking.status === "confirmed" && <><button className="small-action confirm" disabled={pending === booking.id} onClick={() => changeStatus(booking, "completed")}><Check size={15} /> Marcar realizada</button><button className="small-action cancel" disabled={pending === booking.id} onClick={() => changeStatus(booking, "cancelled")} aria-label="Cancelar solicitud"><X size={16} /></button></>}{booking.status === "completed" && booking.paymentStatus !== "paid" && <button className="small-action confirm" disabled={pending === booking.id} onClick={() => markPaid(booking)}><Banknote size={15} /> Marcar cobrada</button>}</div></div>)}</div> : <div className="empty-admin"><CalendarDays size={30} /><strong>La agenda está libre por ahora.</strong><span>Las solicitudes de estudios y fotógrafos aparecerán aquí.</span></div>}</section>
+    <StudioProfiles bookings={bookings} />
+    {showModal && <AdminBookingModal dresses={bookableDresses} onClose={() => setShowModal(false)} onSaved={() => { setShowModal(false); load(); }} />}
+    {editingBooking && <BookingEditModal booking={editingBooking} dresses={dresses} onClose={() => setEditingBooking(null)} onSaved={() => { setEditingBooking(null); load(); }} />}
   </>;
+}
+
+function BookingEditModal({ booking, dresses, onClose, onSaved }) {
+  const [dressId, setDressId] = useState(booking.dressId);
+  const [sessionType, setSessionType] = useState(booking.sessionType);
+  const [durationMinutes, setDurationMinutes] = useState(booking.durationMinutes);
+  const [startTime, setStartTime] = useState(booking.startTime || "10:00");
+  const [paymentStatus, setPaymentStatus] = useState(booking.paymentStatus || "pending");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError("");
+    const form = new FormData(event.currentTarget);
+    try {
+      await api(`/api/admin/bookings/${booking.id}`, { method: "PATCH", body: JSON.stringify({
+        dressId,
+        studioName: form.get("studioName"),
+        contactName: form.get("contactName"),
+        phone: form.get("phone"),
+        date: form.get("date"),
+        startTime,
+        sessionType,
+        durationMinutes,
+        paymentStatus,
+        gross: form.get("gross"),
+        helperCost: form.get("helperCost"),
+        maintenance: form.get("maintenance"),
+        notes: form.get("notes"),
+      }) });
+      onSaved();
+    } catch (caught) { setError(caught.message); }
+    finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="form-modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="edit-booking-title"><button className="close-button" onClick={onClose} aria-label="Cerrar"><X size={21} /></button><span className="kicker"><i /> CORRECCIÓN DE SESIÓN</span><h2 id="edit-booking-title">Editar registro.</h2><p>Corrige horario, duración, cobro e importes reales. Estos valores alimentan la cartera y los totales financieros.</p><form className="form-stack" onSubmit={submit}>
+    <label>Vestido<select value={dressId} onChange={(event) => setDressId(event.target.value)}>{dresses.map((dress) => <option key={dress.id} value={dress.id}>{dress.name}{!dress.active ? " · archivado" : ""}</option>)}</select></label>
+    <div className="form-columns"><label>Estudio / fotógrafo<input name="studioName" required defaultValue={booking.studioName || booking.name} /></label><label>Contacto<input name="contactName" defaultValue={booking.contactName || ""} /></label></div>
+    <div className="form-columns"><label>Fecha<input name="date" type="date" required defaultValue={booking.date} /></label><label>Hora de inicio<select value={startTime} onChange={(event) => setStartTime(event.target.value)}>{timeOptions.map((time) => <option key={time}>{time}</option>)}</select></label></div>
+    <div className="form-columns"><label>Tipo<select value={sessionType} onChange={(event) => setSessionType(event.target.value)}><option value="interior">Interior</option><option value="exterior">Exterior</option></select></label><label>Duración<select value={durationMinutes} onChange={(event) => setDurationMinutes(Number(event.target.value))}>{durationOptions(sessionType).map((value) => <option key={value} value={value}>{durationLabel(value)}</option>)}</select></label></div>
+    <div className="form-columns"><label>Teléfono<input name="phone" defaultValue={booking.phone || ""} /></label><label>Estado del cobro<select value={paymentStatus} onChange={(event) => setPaymentStatus(event.target.value)}><option value="pending">Pendiente de cobro</option><option value="paid">Cobrada</option></select></label></div>
+    <div className="form-columns"><label>Importe real cobrado (€)<input name="gross" type="number" min="0" step="0.01" required defaultValue={Number(booking.gross).toFixed(2)} /></label><label>Coste real de ayudante (€)<input name="helperCost" type="number" min="0" step="0.01" required defaultValue={Number(booking.helperCost || 0).toFixed(2)} /></label></div>
+    <label>Lavandería / reparación / mantenimiento real (€)<input name="maintenance" type="number" min="0" step="0.01" required defaultValue={Number(booking.maintenance || 0).toFixed(2)} /></label>
+    <label>Notas<textarea name="notes" rows="3" maxLength="1000" defaultValue={booking.notes || ""} placeholder="Lavandería, reparación, incidencia o ajuste manual…" /></label>
+    <div className="modal-total"><span>Horario resultante</span><strong>{startTime}–{addMinutesToTime(startTime, durationMinutes)}</strong></div>
+    {error && <div className="form-error"><Info size={16} />{error}</div>}<div className="modal-actions"><button type="button" className="button button-outline" onClick={onClose}>Cancelar</button><button className="button button-dark" disabled={busy}>{busy ? "Guardando…" : "Guardar corrección"}<Check size={17} /></button></div>
+  </form></section></div>;
+}
+
+function StudioProfiles({ bookings }) {
+  const studios = useMemo(() => {
+    const map = new Map();
+    for (const booking of bookings) {
+      const key = (booking.studioName || booking.name || "Sin nombre").trim();
+      if (!map.has(key)) map.set(key, { name: key, phone: "", contact: "", sessions: [], paid: 0, outstanding: 0 });
+      const studio = map.get(key);
+      if (booking.phone) studio.phone = booking.phone;
+      if (booking.contactName) studio.contact = booking.contactName;
+      studio.sessions.push(booking);
+      if (booking.status === "completed" && booking.paymentStatus === "paid") studio.paid += Number(booking.gross || 0);
+      if (booking.status === "completed" && booking.paymentStatus !== "paid") studio.outstanding += Number(booking.gross || 0);
+    }
+    return [...map.values()].sort((a, b) => b.sessions.length - a.sessions.length || a.name.localeCompare(b.name, "es"));
+  }, [bookings]);
+  if (!studios.length) return null;
+  return <section className="admin-panel studio-profiles"><div className="panel-title-row"><div><span className="kicker">ESTUDIOS Y FOTÓGRAFOS</span><h2>Clientes profesionales</h2></div><span className="table-counter">{studios.length} contactos</span></div><div className="studio-profile-grid">{studios.map((studio) => <details className="studio-profile-card" key={studio.name}><summary><div><strong>{studio.name}</strong><span>{studio.contact || "Sin persona de contacto"}{studio.phone ? ` · ${studio.phone}` : ""}</span></div><div><strong>{studio.sessions.length}</strong><span>{studio.sessions.length === 1 ? "sesión" : "sesiones"}</span></div></summary><div className="studio-profile-totals"><span>Cobrado <strong>{formatMoney(studio.paid)}</strong></span><span>Pendiente <strong>{formatMoney(studio.outstanding)}</strong></span></div><div className="studio-history">{studio.sessions.slice(0, 8).map((booking) => <div key={booking.id}><span>{formatDate(booking.date)} · {bookingTimeLabel(booking)}</span><strong>{booking.dressName}</strong><small>{typeLabel(booking.sessionType)} · {formatMoney(booking.gross)} · {booking.status === "completed" ? paymentLabel(booking.paymentStatus) : ({ requested: "Solicitud", confirmed: "Confirmada", cancelled: "Cancelada" }[booking.status] || booking.status)}</small></div>)}</div></details>)}</div></section>;
 }
 
 function StatusBadge({ status }) {
