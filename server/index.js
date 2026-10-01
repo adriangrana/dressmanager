@@ -543,16 +543,35 @@ function parseSizeGuideOcr(blocks, rawText) {
 
   const deduped = [];
   const seen = new Set();
+  let discardedValues = 0;
+  const plausibleMeasurement = (field, value) => {
+    if (!value) return "";
+    const number = Number(value);
+    const [min, max] = field === "length" ? [80, 220] : [40, 200];
+    if (!Number.isFinite(number) || number < min || number > max) {
+      discardedValues += 1;
+      return "";
+    }
+    return String(value);
+  };
   for (const row of parsed.rows) {
     const key = row.size.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    deduped.push(row);
+    deduped.push({
+      ...row,
+      bust: plausibleMeasurement("bust", row.bust),
+      waist: plausibleMeasurement("waist", row.waist),
+      hip: plausibleMeasurement("hip", row.hip),
+      length: plausibleMeasurement("length", row.length),
+    });
   }
+  const warnings = [...(parsed.warnings || [])];
+  if (discardedValues) warnings.push(`Se descartaron ${discardedValues} valores imposibles para centímetros; revisa las celdas vacías.`);
   return {
     rows: deduped,
     note: "Medidas extraídas localmente de la imagen del fabricante. Revísalas antes de guardar.",
-    warnings: parsed.warnings || [],
+    warnings,
   };
 }
 
@@ -742,7 +761,7 @@ app.post("/api/admin/dresses", requireAdmin, upload.fields([{ name: "images", ma
     if (sizeGuideData) {
       let parsed;
       try { parsed = JSON.parse(sizeGuideData); } catch { throw new Error("No se pudo interpretar la guía de tallas."); }
-      const rows = Array.isArray(parsed?.rows) ? parsed.rows.slice(0, 12).map((row) => ({
+      const rows = Array.isArray(parsed?.rows) ? parsed.rows.slice(0, 20).map((row) => ({
         size: cleanText(row?.size, 60), bust: cleanText(row?.bust, 20), waist: cleanText(row?.waist, 20),
         hip: cleanText(row?.hip, 20), length: cleanText(row?.length, 20),
       })).filter((row) => row.size) : [];
@@ -784,7 +803,7 @@ app.patch("/api/admin/dresses/:id", requireAdmin, upload.fields([{ name: "images
       else {
         let parsed;
         try { parsed = JSON.parse(raw); } catch { throw new Error("No se pudo interpretar la guía de tallas."); }
-        const rows = Array.isArray(parsed?.rows) ? parsed.rows.slice(0, 12).map((row) => ({
+        const rows = Array.isArray(parsed?.rows) ? parsed.rows.slice(0, 20).map((row) => ({
           size: cleanText(row?.size, 60), bust: cleanText(row?.bust, 20), waist: cleanText(row?.waist, 20),
           hip: cleanText(row?.hip, 20), length: cleanText(row?.length, 20),
         })).filter((row) => row.size) : [];
