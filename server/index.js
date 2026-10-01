@@ -409,67 +409,134 @@ function parseHorizontalSizeTable(rows, fullText) {
   return { rows: resultRows, warnings };
 }
 
-function headerColumns(rows) {
+function exactHeaderWord(words, pattern) {
+  return words.find((word) => pattern.test(normalizeOcrText(word.text)));
+}
+
+function nearestNumericWord(words, targetX, maxDistance = Infinity) {
+  const candidates = words
+    .map((word) => ({ word, value: ocrNumber(word.text), distance: Math.abs(word.cx - targetX) }))
+    .filter((item) => item.value && item.distance <= maxDistance)
+    .sort((a, b) => a.distance - b.distance || b.word.confidence - a.word.confidence);
+  return candidates[0] || null;
+}
+
+function ocrSizeValue(value) {
+  const normalized = normalizeOcrText(value).toUpperCase();
+  const match = normalized.match(/\b(\d{1,2})(W)?\b/);
+  return match ? `${match[1]}${match[2] || ""}` : "";
+}
+
+function sizeGuideHeader(rows) {
   let best = null;
+
   for (let index = 0; index < rows.length; index += 1) {
-    const band = rows.slice(Math.max(0, index - 1), Math.min(rows.length, index + 2));
-    const words = band.flatMap((row) => row.words);
+    const titleRow = rows[index];
+    const titleWords = titleRow.words;
+    const parents = {
+      bust: exactHeaderWord(titleWords, /^(BUST|CHEST|PECHO)$/i),
+      waist: exactHeaderWord(titleWords, /^(WAIST|CINTURA)$/i),
+      hip: exactHeaderWord(titleWords, /^(HIP|HIPS|CADERA|CADERAS)$/i),
+      length: exactHeaderWord(titleWords, /^(HOLLOW|LENGTH|LONGITUD|LARGO|FLOOR)$/i),
+    };
+    const parentEntries = Object.entries(parents).filter(([, word]) => word);
+    if (parentEntries.length < 3) continue;
+
+    const nextRows = rows.slice(index + 1, Math.min(rows.length, index + 4));
+    const subWords = nextRows.flatMap((row) => row.words);
+    const cmWords = subWords.filter((word) => /^CM$/i.test(normalizeOcrText(word.text))).sort((a, b) => a.cx - b.cx);
+
     const columns = {};
-    for (const word of words) {
-      const text = normalizeOcrText(word.text);
-      if (!columns.size && /^(US|SIZE|TALLA)$/i.test(text)) columns.size = word.cx;
-      if (!columns.eu && /^(EU|EUR|EURO)$/i.test(text)) columns.eu = word.cx;
-      const key = measurementKey(text);
-      if (key && columns[key] === undefined) columns[key] = word.cx;
+    for (const [key, parent] of parentEntries) {
+      const candidates = cmWords
+        .filter((word) => word.cx >= parent.cx - 8)
+        .map((word) => ({ word, distance: Math.abs(word.cx - parent.cx) }))
+        .sort((a, b) => a.distance - b.distance);
+      columns[key] = candidates[0]?.word?.cx ?? parent.cx;
     }
-    const measureCount = ["bust", "waist", "hip", "length"].filter((key) => columns[key] !== undefined).length;
-    const score = (columns.size !== undefined ? 2 : 0) + measureCount;
-    if (score >= 4 && (!best || score > best.score)) best = { columns, score, endIndex: Math.min(rows.length - 1, index + 1) };
+
+    const usWord = exactHeaderWord(titleWords, /^(US|USA)$/i)
+      || exactHeaderWord(subWords, /^(US|USA)$/i);
+    const euWord = exactHeaderWord(titleWords, /^(EU|EUR|EUROPE|EURO)$/i)
+      || exactHeaderWord(subWords, /^(EU|EUR|EUROPE|EURO)$/i);
+
+    if (usWord) columns.size = usWord.cx;
+    if (euWord) columns.eu = euWord.cx;
+
+    const score = parentEntries.length * 3 + (columns.size !== undefined ? 2 : 0) + (columns.eu !== undefined ? 1 : 0) + cmWords.length;
+    if (!best || score > best.score) {
+      best = {
+        columns,
+        score,
+        startIndex: index,
+        endIndex: Math.min(rows.length - 1, index + Math.max(1, nextRows.findIndex((row) => /\bCM\b/i.test(row.text)) + 1)),
+        usedCmSubcolumns: cmWords.length >= parentEntries.length,
+      };
+    }
   }
+
   return best;
 }
 
 function parseVerticalSizeTable(rows, fullText) {
-  const header = headerColumns(rows);
-  if (!header) return null;
+  const header = sizeGuideHeader(rows);
+  if (!header || header.columns.size === undefined) return null;
+
   const columns = header.columns;
-  const columnList = Object.entries(columns).sort((a, b) => a[1] - b[1]);
+  const xPositions = Object.values(columns).filter(Number.isFinite).sort((a, b) => a - b);
+  const gaps = xPositions.slice(1).map((value, index) => value - xPositions[index]).filter((gap) => gap > 8);
+  const medianGap = gaps.length ? gaps.sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 70;
+  const maxDistance = Math.max(24, medianGap * 0.48);
   const result = [];
 
-  for (const row of rows.slice(header.endIndex + 1, header.endIndex + 28)) {
-    const numericWords = row.words.filter((word) => ocrNumber(word.text));
-    if (numericWords.length < 3) continue;
-    const assigned = {};
-    for (const word of numericWords) {
-      const nearest = columnList
-        .map(([key, x]) => ({ key, distance: Math.abs(word.cx - x) }))
-        .sort((a, b) => a.distance - b.distance)[0];
-      if (nearest && assigned[nearest.key] === undefined) assigned[nearest.key] = ocrNumber(word.text);
-    }
-    const us = assigned.size || "";
-    if (!us || Number(us) > 32) continue;
-    const eu = assigned.eu || "";
-    const measurements = [assigned.bust, assigned.waist, assigned.hip, assigned.length].filter(Boolean);
+  for (const row of rows.slice(header.endIndex + 1, header.endIndex + 36)) {
+    if (/PLUS\s*SIZE|CUSTOMIZED|CUSTOMI[ZS]ED/i.test(row.text)) continue;
+
+    const sizeWord = row.words
+      .map((word) => ({ word, value: ocrSizeValue(word.text), distance: Math.abs(word.cx - columns.size) }))
+      .filter((item) => item.value && item.distance <= maxDistance)
+      .sort((a, b) => a.distance - b.distance || b.word.confidence - a.word.confidence)[0];
+
+    if (!sizeWord) continue;
+    const us = sizeWord.value;
+    const usNumber = Number(us.replace(/W$/i, ""));
+    if (!Number.isFinite(usNumber) || usNumber > 40) continue;
+
+    const euMatch = columns.eu !== undefined ? nearestNumericWord(row.words, columns.eu, maxDistance) : null;
+    const eu = euMatch?.value || "";
+
+    const bust = columns.bust !== undefined ? nearestNumericWord(row.words, columns.bust, maxDistance)?.value || "" : "";
+    const waist = columns.waist !== undefined ? nearestNumericWord(row.words, columns.waist, maxDistance)?.value || "" : "";
+    const hip = columns.hip !== undefined ? nearestNumericWord(row.words, columns.hip, maxDistance)?.value || "" : "";
+    const length = columns.length !== undefined ? nearestNumericWord(row.words, columns.length, maxDistance)?.value || "" : "";
+
+    const measurements = [bust, waist, hip, length].filter(Boolean);
     if (measurements.length < 2) continue;
+
     result.push({
       size: eu ? `US ${us} · EU ${eu}` : `US ${us}`,
-      bust: assigned.bust || "",
-      waist: assigned.waist || "",
-      hip: assigned.hip || "",
-      length: assigned.length || "",
+      bust,
+      waist,
+      hip,
+      length,
     });
   }
 
   if (result.length < 2) return null;
   const warnings = [];
-  if (/\bINCH|INCHES\b/i.test(fullText) && /\bCM\b/i.test(fullText)) warnings.push("La imagen contiene centímetros y pulgadas; verifica las cifras extraídas.");
-  if (!columns.eu) warnings.push("No se reconoció una columna EU; las tallas se muestran como US.");
+  if (!header.usedCmSubcolumns && /\bINCH|INCHES\b/i.test(fullText) && /\bCM\b/i.test(fullText)) {
+    warnings.push("No pude aislar con total seguridad las subcolumnas en centímetros; revisa los valores.");
+  }
+  if (!columns.eu) warnings.push("No se reconoció la columna europea; las tallas se muestran como US.");
+  if (!columns.length) warnings.push("No se reconoció la medida Hollow/Largo; completa esa columna manualmente.");
   return { rows: result.slice(0, 20), warnings };
 }
 
 function parseSizeGuideOcr(blocks, rawText) {
   const rows = visualRowsFromBlocks(blocks);
-  const parsed = parseHorizontalSizeTable(rows, rawText) || parseVerticalSizeTable(rows, rawText);
+  // Las tablas normales de fabricante tienen las tallas en filas y las medidas en columnas.
+  // Se intenta ese formato primero para no confundir columnas en pulgadas con las columnas en cm.
+  const parsed = parseVerticalSizeTable(rows, rawText) || parseHorizontalSizeTable(rows, rawText);
   if (!parsed?.rows?.length) {
     throw new Error("He podido leer texto, pero no reconstruir la tabla con seguridad. Puedes introducir las medidas manualmente.");
   }
