@@ -166,7 +166,7 @@ function DressDetail({ dress, onClose, onBook }) {
     <section className="dress-detail-modal" role="dialog" aria-modal="true" aria-label={`Ficha de ${dress.name}`}>
       <button className="close-button" onClick={onClose} aria-label="Cerrar"><X size={21} /></button>
       <div className="detail-gallery"><img className="detail-main-image" src={images[imageIndex]} alt={`${dress.name}, foto ${imageIndex + 1}`} /><div className="detail-thumbnails">{images.map((image, index) => <button key={image} className={index === imageIndex ? "selected" : ""} onClick={() => setImageIndex(index)} aria-label={`Ver foto ${index + 1}`}><img src={image} alt="" /></button>)}</div></div>
-      <div className="detail-copy"><span className="kicker"><i /> {dress.category} · {dress.color}</span><h2>{dress.name}</h2><p>{dress.description}</p><div className="detail-facts"><div><span>TALLA</span><strong>{dress.sizeLabel || "A consultar"}</strong></div><div><span>AJUSTE</span><strong>{dress.sizeRange || "Consulta en el atelier"}</strong></div></div>{dress.id === "aurora-rose" && <SizeGuide />}
+      <div className="detail-copy"><span className="kicker"><i /> {dress.category} · {dress.color}</span><h2>{dress.name}</h2><p>{dress.description}</p><div className="detail-facts"><div><span>TALLA</span><strong>{dress.sizeLabel || "A consultar"}</strong></div><div><span>AJUSTE</span><strong>{dress.sizeRange || "Consulta en el atelier"}</strong></div></div><SizeGuide dress={dress} />
         <div className="detail-price"><div><span>SESIÓN EN INTERIOR</span><strong>{formatMoney(tariffFor(dress, "interior").price)}</strong><small>IVA incl. · 30 min; +{formatMoney(tariffFor(dress, "interior").extraPrice)} por cada 30 min más</small></div><div className="additional-price"><span>Sesión en exterior</span><strong>{formatMoney(tariffFor(dress, "exterior").price)} <small>/ hasta 2 h</small></strong><small>IVA incl. · +{formatMoney(tariffFor(dress, "exterior").extraPrice)} por cada hora más</small></div></div>
         <button className="button button-dark button-wide" onClick={onBook}>Consultar sesión supervisada <ArrowUpRight size={18} /></button><span className="detail-note"><LockKeyhole size={14} /> El vestido permanece bajo supervisión del equipo fotográfico</span>
       </div>
@@ -174,10 +174,30 @@ function DressDetail({ dress, onClose, onBook }) {
   </div>;
 }
 
-function SizeGuide() {
-  return <details className="size-guide"><summary>Guía de tallas y medidas <ChevronDown size={16} /></summary><div className="size-table-wrap"><table><thead><tr><th>Medidas (cm)</th><th>US 6 · EU 36</th><th>US 8 · EU 38</th><th>US 10 · EU 40</th></tr></thead><tbody><tr><th>Pecho</th><td>88</td><td>90</td><td>93</td></tr><tr><th>Cintura</th><td>70</td><td>72</td><td>75</td></tr><tr><th>Cadera</th><td>96</td><td>98</td><td>101</td></tr><tr><th>Largo</th><td>150</td><td>150</td><td>155</td></tr></tbody></table></div><p>Tabla orientativa del fabricante. La talla base es US 8 / EU 38 y el vestido se ajusta de US 6 a 10 / EU 36–40. Confirma las medidas exactas en el atelier.</p><a href="/images/vestidos/aurora-rose/guia-tallas.png" target="_blank" rel="noreferrer">Consultar imagen original del fabricante ↗</a></details>;
-}
+function SizeGuide({ dress }) {
+  const guide = dress?.sizeGuide || {};
+  const rows = Array.isArray(guide.rows) ? guide.rows.filter((row) => row?.size) : [];
+  const hasImage = Boolean(guide.image);
+  if (!rows.length && !hasImage) return null;
 
+  const measurements = [
+    ["Pecho", "bust"],
+    ["Cintura", "waist"],
+    ["Cadera", "hip"],
+    ["Largo", "length"],
+  ];
+  const visibleMeasurements = measurements.filter(([, key]) => rows.some((row) => row?.[key]));
+
+  return <details className="size-guide">
+    <summary>Guía de tallas y medidas <ChevronDown size={16} /></summary>
+    {rows.length > 0 && <div className="size-table-wrap"><table>
+      <thead><tr><th>Medidas (cm)</th>{rows.map((row, index) => <th key={`${row.size}-${index}`}>{row.size}</th>)}</tr></thead>
+      <tbody>{visibleMeasurements.map(([label, key]) => <tr key={key}><th>{label}</th>{rows.map((row, index) => <td key={`${key}-${index}`}>{row[key] || "—"}</td>)}</tr>)}</tbody>
+    </table></div>}
+    {guide.note && <p>{guide.note}</p>}
+    {hasImage && <a href={guide.image} target="_blank" rel="noreferrer">Consultar imagen original del fabricante ↗</a>}
+  </details>;
+}
 function PublicBookingModal({ dress, onClose }) {
   const [sessionType, setSessionType] = useState("exterior");
   const [durationMinutes, setDurationMinutes] = useState(120);
@@ -423,6 +443,9 @@ function DressForm({ initial, onClose, onSaved }) {
   const [error, setError] = useState("");
   const [category, setCategory] = useState(initial?.category || "Estándar");
   const [existingImages, setExistingImages] = useState(initial?.images || []);
+  const [sizeGuideRows, setSizeGuideRows] = useState(() => Array.isArray(initial?.sizeGuide?.rows) ? initial.sizeGuide.rows : []);
+  const [sizeGuideNote, setSizeGuideNote] = useState(initial?.sizeGuide?.note || "");
+  const [existingSizeGuideImage, setExistingSizeGuideImage] = useState(initial?.sizeGuide?.image || "");
   function changeCategory(event) {
     const next = event.target.value;
     const form = event.currentTarget.form;
@@ -443,10 +466,27 @@ function DressForm({ initial, onClose, onSaved }) {
       return copy;
     });
   }
+  function addSizeGuideRow() {
+    setSizeGuideRows((rows) => [...rows, { size: "", bust: "", waist: "", hip: "", length: "" }]);
+  }
+  function updateSizeGuideRow(index, field, value) {
+    setSizeGuideRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+  }
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError("");
     const data = new FormData(event.currentTarget);
-    if (initial) data.set("existingImages", JSON.stringify(existingImages));
+    const guideRows = sizeGuideRows.map((row) => ({
+      size: row.size?.trim() || "",
+      bust: row.bust?.trim() || "",
+      waist: row.waist?.trim() || "",
+      hip: row.hip?.trim() || "",
+      length: row.length?.trim() || "",
+    })).filter((row) => row.size);
+    data.set("sizeGuideData", JSON.stringify({ rows: guideRows, note: sizeGuideNote.trim() }));
+    if (initial) {
+      data.set("existingImages", JSON.stringify(existingImages));
+      data.set("removeSizeGuideImage", existingSizeGuideImage ? "0" : "1");
+    }
     try {
       if (initial) await api(`/api/admin/dresses/${initial.id}`, { method: "PATCH", body: data });
       else await api("/api/admin/dresses", { method: "POST", body: data });
@@ -459,6 +499,13 @@ function DressForm({ initial, onClose, onSaved }) {
     <label>Categoría<select name="category" value={category} onChange={changeCategory}><option>Premium</option><option>Estándar</option><option>Económico</option><option>Otra</option></select></label>
     <label>Descripción<textarea name="description" maxLength="1000" defaultValue={initial?.description || ""} rows="3" placeholder="Corte, tejido, detalles especiales…" /></label>
     <div className="form-columns"><label>Talla base<input name="sizeLabel" maxLength="80" defaultValue={initial?.sizeLabel || ""} placeholder="Ej. US 8 · EU 38" /></label><label>Rango ajustable<input name="sizeRange" maxLength="80" defaultValue={initial?.sizeRange || ""} placeholder="Ej. US 6–10 · EU 36–40" /></label></div>
+    <section className="size-guide-editor">
+      <div className="size-guide-editor-head"><div><strong>Guía de tallas del fabricante</strong><small>Opcional. Solo se mostrará públicamente si añades medidas o la imagen original.</small></div><button type="button" className="small-action" onClick={addSizeGuideRow}><Plus size={15} /> Añadir talla</button></div>
+      {sizeGuideRows.length > 0 && <div className="size-guide-editor-table"><div className="size-guide-editor-row header"><span>Talla</span><span>Pecho</span><span>Cintura</span><span>Cadera</span><span>Largo</span><span /></div>{sizeGuideRows.map((row, index) => <div className="size-guide-editor-row" key={index}><input aria-label="Talla" value={row.size || ""} onChange={(event) => updateSizeGuideRow(index, "size", event.target.value)} placeholder="US 14 · EU 44" /><input aria-label="Pecho en cm" value={row.bust || ""} onChange={(event) => updateSizeGuideRow(index, "bust", event.target.value)} inputMode="decimal" placeholder="cm" /><input aria-label="Cintura en cm" value={row.waist || ""} onChange={(event) => updateSizeGuideRow(index, "waist", event.target.value)} inputMode="decimal" placeholder="cm" /><input aria-label="Cadera en cm" value={row.hip || ""} onChange={(event) => updateSizeGuideRow(index, "hip", event.target.value)} inputMode="decimal" placeholder="cm" /><input aria-label="Largo en cm" value={row.length || ""} onChange={(event) => updateSizeGuideRow(index, "length", event.target.value)} inputMode="decimal" placeholder="cm" /><button type="button" className="remove-size-row" onClick={() => setSizeGuideRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))} aria-label="Eliminar talla"><X size={15} /></button></div>)}</div>}
+      <label>Nota de la guía<textarea value={sizeGuideNote} onChange={(event) => setSizeGuideNote(event.target.value)} rows="2" maxLength="1000" placeholder="Ej. Tabla orientativa del fabricante. Confirmar medidas antes de reservar." /></label>
+      {existingSizeGuideImage && <div className="existing-size-guide-image"><img src={existingSizeGuideImage} alt="Guía de tallas actual" /><div><strong>Imagen original del fabricante</strong><a href={existingSizeGuideImage} target="_blank" rel="noreferrer">Ver imagen ↗</a><button type="button" onClick={() => setExistingSizeGuideImage("")}>Quitar imagen</button></div></div>}
+      <label className="upload-control"><ImagePlus size={20} /><span><strong>{existingSizeGuideImage ? "Sustituir imagen de la guía" : "Imagen original de la guía de tallas"}</strong><small>Opcional · JPG, PNG o WebP · máximo 8 MB</small></span><input name="sizeGuideImage" type="file" accept="image/jpeg,image/png,image/webp" /></label>
+    </section>
     <h3>Tarifa de sesión en interior</h3>
     <div className="form-columns"><label>Precio inicial (€ IVA incl.)<input name="interiorPrice" type="number" min="0.01" step="0.01" placeholder="Por definir" defaultValue={initial ? (Number(tariffFor(initial, "interior").price) || "") : ""} /></label><label>Incluye (minutos)<input value="30" disabled /></label></div>
     <div className="form-columns"><label>Por cada 30 min adicionales (€)<input name="interiorExtraPrice" type="number" min="0.01" step="0.01" placeholder="Por definir" defaultValue={initial ? (Number(tariffFor(initial, "interior").extraPrice) || "") : ""} /></label><label>Fondo de mantenimiento (€)<input name="interiorMaintenance" type="number" min="0.01" step="0.01" placeholder="Por definir" defaultValue={initial ? (Number(tariffFor(initial, "interior").maintenance) || "") : ""} /></label></div>

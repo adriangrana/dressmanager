@@ -93,6 +93,15 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function parseSizeGuide(row) {
+  let data = { rows: [], note: "" };
+  try {
+    const parsed = JSON.parse(row?.size_guide_json || "{}");
+    if (parsed && typeof parsed === "object") data = { rows: Array.isArray(parsed.rows) ? parsed.rows : [], note: cleanText(parsed.note, 1000) };
+  } catch {}
+  return { ...data, image: row?.size_guide_image || "" };
+}
+
 function publicDress(row) {
   if (!row) return null;
   return {
@@ -103,6 +112,7 @@ function publicDress(row) {
     description: row.description,
     sizeLabel: row.size_label,
     sizeRange: row.size_range,
+    sizeGuide: parseSizeGuide(row),
     tariffs: {
       interior: { price: row.interior_price, includedMinutes: row.interior_included_minutes, extraPrice: row.interior_extra_30m, extraMinutes: 30 },
       exterior: { price: row.exterior_price, includedMinutes: row.exterior_included_minutes, extraPrice: row.exterior_extra_hour, extraMinutes: 60 },
@@ -211,7 +221,7 @@ const upload = multer({
     },
     filename: (req, file, callback) => callback(null, `${safeSlug(req.body?.name)}-${randomUUID()}${imageExtensions[file.mimetype] || ".img"}`),
   }),
-  limits: { files: 8, fileSize: 8 * 1024 * 1024 },
+  limits: { files: 9, fileSize: 8 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
     if (!imageExtensions[file.mimetype]) return callback(new Error("Usa imágenes JPG, PNG o WebP."));
     callback(null, true);
@@ -339,7 +349,7 @@ app.get("/api/admin/dresses", requireAdmin, (_req, res) => {
   res.json({ dresses: rows.map(adminDress) });
 });
 
-app.post("/api/admin/dresses", requireAdmin, upload.array("images", 8), (req, res) => {
+app.post("/api/admin/dresses", requireAdmin, upload.fields([{ name: "images", maxCount: 8 }, { name: "sizeGuideImage", maxCount: 1 }]), (req, res) => {
   try {
     const name = cleanText(req.body.name, 100);
     const category = cleanText(req.body.category, 40);
@@ -347,6 +357,17 @@ app.post("/api/admin/dresses", requireAdmin, upload.array("images", 8), (req, re
     const description = cleanText(req.body.description, 1000);
     const sizeLabel = cleanText(req.body.sizeLabel, 80);
     const sizeRange = cleanText(req.body.sizeRange, 80);
+    const sizeGuideData = cleanText(req.body.sizeGuideData, 12000);
+    let sizeGuideJson = "";
+    if (sizeGuideData) {
+      let parsed;
+      try { parsed = JSON.parse(sizeGuideData); } catch { throw new Error("No se pudo interpretar la guía de tallas."); }
+      const rows = Array.isArray(parsed?.rows) ? parsed.rows.slice(0, 12).map((row) => ({
+        size: cleanText(row?.size, 60), bust: cleanText(row?.bust, 20), waist: cleanText(row?.waist, 20),
+        hip: cleanText(row?.hip, 20), length: cleanText(row?.length, 20),
+      })).filter((row) => row.size) : [];
+      sizeGuideJson = JSON.stringify({ rows, note: cleanText(parsed?.note, 1000) });
+    }
     const purchaseCost = validMoney(req.body.purchaseCost, "de compra");
     const interiorPrice = optionalPrice(req.body.interiorPrice, "de sesión interior");
     const interiorExtra = optionalPrice(req.body.interiorExtraPrice, "por cada 30 minutos adicionales");
@@ -356,16 +377,17 @@ app.post("/api/admin/dresses", requireAdmin, upload.array("images", 8), (req, re
     const exteriorMaintenance = optionalPrice(req.body.exteriorMaintenance, "de mantenimiento exterior");
     if (name.length < 2 || !color) throw new Error("Añade el nombre y el color del vestido.");
     if (!DRESS_CATEGORIES.includes(category)) throw new Error("Selecciona una categoría válida.");
-    const images = (req.files || []).map((file) => `/uploads/${file.filename}`);
+    const images = (req.files?.images || []).map((file) => `/uploads/${file.filename}`);
+    const sizeGuideImage = req.files?.sizeGuideImage?.[0] ? `/uploads/${req.files.sizeGuideImage[0].filename}` : "";
     if (!images.length) throw new Error("Añade al menos una foto del vestido.");
     const id = `${safeSlug(name)}-${randomUUID().slice(0, 8)}`;
-    db.prepare(`INSERT INTO dresses(id,name,category,color,description,size_label,size_range,purchase_cost,rent_price,included_hours,extra_hour_price,interior_price,interior_included_minutes,interior_extra_30m,interior_maintenance,exterior_price,exterior_included_minutes,exterior_extra_hour,exterior_maintenance,images,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, name, category, color, description, sizeLabel, sizeRange, purchaseCost, exteriorPrice, 2, exteriorExtra, interiorPrice, 30, interiorExtra, interiorMaintenance, exteriorPrice, 120, exteriorExtra, exteriorMaintenance, JSON.stringify(images), new Date().toISOString());
+    db.prepare(`INSERT INTO dresses(id,name,category,color,description,size_label,size_range,size_guide_json,size_guide_image,purchase_cost,rent_price,included_hours,extra_hour_price,interior_price,interior_included_minutes,interior_extra_30m,interior_maintenance,exterior_price,exterior_included_minutes,exterior_extra_hour,exterior_maintenance,images,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, name, category, color, description, sizeLabel, sizeRange, sizeGuideJson, sizeGuideImage, purchaseCost, exteriorPrice, 2, exteriorExtra, interiorPrice, 30, interiorExtra, interiorMaintenance, exteriorPrice, 120, exteriorExtra, exteriorMaintenance, JSON.stringify(images), new Date().toISOString());
     res.status(201).json({ dress: adminDress(db.prepare("SELECT * FROM dresses WHERE id=?").get(id)) });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
-app.patch("/api/admin/dresses/:id", requireAdmin, upload.array("images", 8), (req, res) => {
+app.patch("/api/admin/dresses/:id", requireAdmin, upload.fields([{ name: "images", maxCount: 8 }, { name: "sizeGuideImage", maxCount: 1 }]), (req, res) => {
   try {
     const existing = db.prepare("SELECT * FROM dresses WHERE id=?").get(req.params.id);
     if (!existing) return res.status(404).json({ error: "No encontramos ese vestido." });
@@ -375,6 +397,20 @@ app.patch("/api/admin/dresses/:id", requireAdmin, upload.array("images", 8), (re
     const description = cleanText(req.body.description ?? existing.description, 1000);
     const sizeLabel = cleanText(req.body.sizeLabel ?? existing.size_label, 80);
     const sizeRange = cleanText(req.body.sizeRange ?? existing.size_range, 80);
+    let sizeGuideJson = existing.size_guide_json || "";
+    if (req.body.sizeGuideData !== undefined) {
+      const raw = cleanText(req.body.sizeGuideData, 12000);
+      if (!raw) sizeGuideJson = "";
+      else {
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch { throw new Error("No se pudo interpretar la guía de tallas."); }
+        const rows = Array.isArray(parsed?.rows) ? parsed.rows.slice(0, 12).map((row) => ({
+          size: cleanText(row?.size, 60), bust: cleanText(row?.bust, 20), waist: cleanText(row?.waist, 20),
+          hip: cleanText(row?.hip, 20), length: cleanText(row?.length, 20),
+        })).filter((row) => row.size) : [];
+        sizeGuideJson = JSON.stringify({ rows, note: cleanText(parsed?.note, 1000) });
+      }
+    }
     const purchaseCost = validMoney(req.body.purchaseCost ?? existing.purchase_cost, "de compra");
     const interiorPrice = optionalPrice(req.body.interiorPrice ?? existing.interior_price, "de sesión interior");
     const interiorExtra = optionalPrice(req.body.interiorExtraPrice ?? existing.interior_extra_30m, "por cada 30 minutos adicionales");
@@ -391,14 +427,25 @@ app.patch("/api/admin/dresses/:id", requireAdmin, upload.array("images", 8), (re
       if (!Array.isArray(requestedImages) || requestedImages.some((image) => !previousImages.includes(image))) throw new Error("La galería contiene una foto no válida.");
       keptImages = [...new Set(requestedImages)];
     }
-    const newImages = (req.files || []).map((file) => `/uploads/${file.filename}`);
+    const newImages = (req.files?.images || []).map((file) => `/uploads/${file.filename}`);
     const images = [...keptImages, ...newImages];
+    let sizeGuideImage = existing.size_guide_image || "";
+    const removeSizeGuideImage = ["1", "true"].includes(String(req.body.removeSizeGuideImage || "").toLowerCase());
+    const newSizeGuideFile = req.files?.sizeGuideImage?.[0];
+    if (removeSizeGuideImage) sizeGuideImage = "";
+    if (newSizeGuideFile) sizeGuideImage = `/uploads/${newSizeGuideFile.filename}`;
     if (!images.length) throw new Error("El vestido debe conservar al menos una foto.");
     if (!DRESS_CATEGORIES.includes(category)) throw new Error("Selecciona una categoría válida.");
-    db.prepare(`UPDATE dresses SET name=?,category=?,color=?,description=?,size_label=?,size_range=?,purchase_cost=?,rent_price=?,included_hours=?,extra_hour_price=?,interior_price=?,interior_extra_30m=?,interior_maintenance=?,exterior_price=?,exterior_extra_hour=?,exterior_maintenance=?,images=?,active=? WHERE id=?`)
-      .run(name, category, color, description, sizeLabel, sizeRange, purchaseCost, exteriorPrice, 2, exteriorExtra, interiorPrice, interiorExtra, interiorMaintenance, exteriorPrice, exteriorExtra, exteriorMaintenance, JSON.stringify(images), active, req.params.id);
+    db.prepare(`UPDATE dresses SET name=?,category=?,color=?,description=?,size_label=?,size_range=?,size_guide_json=?,size_guide_image=?,purchase_cost=?,rent_price=?,included_hours=?,extra_hour_price=?,interior_price=?,interior_extra_30m=?,interior_maintenance=?,exterior_price=?,exterior_extra_hour=?,exterior_maintenance=?,images=?,active=? WHERE id=?`)
+      .run(name, category, color, description, sizeLabel, sizeRange, sizeGuideJson, sizeGuideImage, purchaseCost, exteriorPrice, 2, exteriorExtra, interiorPrice, interiorExtra, interiorMaintenance, exteriorPrice, exteriorExtra, exteriorMaintenance, JSON.stringify(images), active, req.params.id);
     for (const removed of previousImages.filter((image) => !keptImages.includes(image) && image.startsWith("/uploads/"))) {
       const target = path.join(PUBLIC_DIR, removed.replace(/^\//, ""));
+      if (target.startsWith(path.join(PUBLIC_DIR, "uploads")) && existsSync(target)) {
+        try { unlinkSync(target); } catch {}
+      }
+    }
+    if (existing.size_guide_image && existing.size_guide_image !== sizeGuideImage && existing.size_guide_image.startsWith("/uploads/")) {
+      const target = path.join(PUBLIC_DIR, existing.size_guide_image.replace(/^\//, ""));
       if (target.startsWith(path.join(PUBLIC_DIR, "uploads")) && existsSync(target)) {
         try { unlinkSync(target); } catch {}
       }

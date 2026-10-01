@@ -66,4 +66,17 @@
 
 .photo-manager-item>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.photo-manager-item .cover-photo{color:#496b54;background:#f1f5ef}.photo-manager-item .remove-photo{color:#8b5f58;background:#fffafa}
 
-.delete-booking-action{border-color:#ebd9d5;background:#fff8f6;color:#945b52}.delete-booking-action:hover{background:#f8e9e5}.button-danger{background:#9b514b;border-color:#9b514b;color:#fff}.button-danger:hover{background:#823f3b;border-color:#823f3b}.delete-booking-modal{width:min(100%,510px)}.delete-booking-modal>p strong{color:#35483d}.delete-booking-modal .form-error{margin-bottom:15px}
+
+/* Per-dress manufacturer size guide editor */
+.size-guide-editor{display:grid;gap:12px;padding:14px;border:1px solid #e0e5dc;border-radius:5px;background:#f7f7f2}
+.size-guide-editor-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.size-guide-editor-head>div{display:grid;gap:3px}.size-guide-editor-head strong{font-size:13px;color:#40564a}.size-guide-editor-head small{font-size:11px;color:#7d8981;line-height:1.45}
+.size-guide-editor-table{display:grid;gap:6px;overflow-x:auto}
+.size-guide-editor-row{display:grid;grid-template-columns:minmax(150px,1.5fr) repeat(4,minmax(75px,.75fr)) 34px;gap:6px;align-items:center;min-width:650px}
+.size-guide-editor-row.header{padding:0 2px;color:#7f8a83;font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase}
+.size-guide-editor-row input{min-height:38px!important;padding:7px 8px!important;font-size:12px!important}
+.remove-size-row{width:32px;height:32px;border:1px solid #eadbd7;border-radius:4px;background:#fffafa;color:#91665f;display:grid;place-items:center}
+.existing-size-guide-image{display:flex;align-items:center;gap:12px;padding:10px;border:1px solid #dfe5dc;border-radius:4px;background:#fff}
+.existing-size-guide-image img{width:72px;height:72px;object-fit:cover;border-radius:3px;border:1px solid #e1e5df}
+.existing-size-guide-image>div{display:grid;gap:4px}.existing-size-guide-image strong{font-size:12px;color:#40564a}.existing-size-guide-image a,.existing-size-guide-image button{font-size:11px;color:#587263;text-align:left}.existing-size-guide-image button{border:0;background:transparent;padding:0;color:#8d615b}
+@media(max-width:700px){.size-guide-editor-head{flex-direction:column}.size-guide-editor-head .small-action{align-self:flex-start}}

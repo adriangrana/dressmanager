@@ -40,6 +40,8 @@ db.exec(`
     description TEXT NOT NULL DEFAULT '',
     size_label TEXT NOT NULL DEFAULT '',
     size_range TEXT NOT NULL DEFAULT '',
+    size_guide_json TEXT NOT NULL DEFAULT '',
+    size_guide_image TEXT NOT NULL DEFAULT '',
     purchase_cost REAL NOT NULL DEFAULT 0,
     rent_price REAL NOT NULL,
     included_hours INTEGER NOT NULL DEFAULT 2,
@@ -94,8 +96,20 @@ for (const [column, definition] of Object.entries({
   interior_extra_30m: "REAL NOT NULL DEFAULT 25", interior_maintenance: "REAL NOT NULL DEFAULT 15",
   exterior_price: "REAL NOT NULL DEFAULT 350", exterior_included_minutes: "INTEGER NOT NULL DEFAULT 120",
   exterior_extra_hour: "REAL NOT NULL DEFAULT 25", exterior_maintenance: "REAL NOT NULL DEFAULT 30",
+  size_guide_json: "TEXT NOT NULL DEFAULT ''", size_guide_image: "TEXT NOT NULL DEFAULT ''",
 })) ensureColumn("dresses", column, definition);
 db.prepare("UPDATE dresses SET category='Premium' WHERE id='aurora-rose' AND category='Estándar'").run();
+
+const auroraSizeGuide = JSON.stringify({
+  rows: [
+    { size: "US 6 · EU 36", bust: "88", waist: "70", hip: "96", length: "150" },
+    { size: "US 8 · EU 38", bust: "90", waist: "72", hip: "98", length: "150" },
+    { size: "US 10 · EU 40", bust: "93", waist: "75", hip: "101", length: "155" },
+  ],
+  note: "Tabla orientativa del fabricante. La talla base es US 8 / EU 38 y el vestido se ajusta de US 6 a 10 / EU 36–40. Confirma las medidas exactas en el atelier.",
+});
+db.prepare("UPDATE dresses SET size_guide_json=?, size_guide_image=? WHERE id='aurora-rose' AND (size_guide_json='' OR size_guide_json IS NULL)")
+  .run(auroraSizeGuide, "/images/vestidos/aurora-rose/guia-tallas.png");
 for (const [column, definition] of Object.entries({
   session_type: "TEXT NOT NULL DEFAULT 'exterior'", studio_name: "TEXT NOT NULL DEFAULT ''",
   contact_name: "TEXT NOT NULL DEFAULT ''", duration_minutes: "INTEGER NOT NULL DEFAULT 120",
@@ -159,6 +173,10 @@ if (!seededDress) {
       created_at: new Date().toISOString(),
     });
 }
+
+// Seed the manufacturer guide for Aurora on both new and upgraded databases.
+db.prepare("UPDATE dresses SET size_guide_json=?, size_guide_image=? WHERE id='aurora-rose' AND (size_guide_json='' OR size_guide_json IS NULL)")
+  .run(auroraSizeGuide, "/images/vestidos/aurora-rose/guia-tallas.png");
 
 export function ensureAdmin(email, password) {
   const normalizedEmail = String(email || "").trim().toLowerCase();
