@@ -173,8 +173,13 @@ function DressDetail({ dress, onClose, onBook }) {
   </div>;
 }
 
-function SizeGuide() {
-  return <details className="size-guide"><summary>Guía de tallas y medidas <ChevronDown size={16} /></summary><div className="size-table-wrap"><table><thead><tr><th>Medidas (cm)</th><th>US 6 · EU 36</th><th>US 8 · EU 38</th><th>US 10 · EU 40</th></tr></thead><tbody><tr><th>Pecho</th><td>88</td><td>90</td><td>93</td></tr><tr><th>Cintura</th><td>70</td><td>72</td><td>75</td></tr><tr><th>Cadera</th><td>96</td><td>98</td><td>101</td></tr><tr><th>Largo</th><td>150</td><td>150</td><td>155</td></tr></tbody></table></div><p>Tabla orientativa del fabricante. La talla base es US 8 / EU 38 y el vestido se ajusta de US 6 a 10 / EU 36–40. Confirma las medidas exactas en el atelier.</p><a href="/images/vestidos/aurora-rose/guia-tallas.png" target="_blank" rel="noreferrer">Consultar imagen original del fabricante ↗</a></details>;
+function SizeGuide({ dress }) {
+  if (dress.id === "aurora-rose") {
+    return <details className="size-guide"><summary>Guía de tallas y medidas <ChevronDown size={16} /></summary><div className="size-table-wrap"><table><thead><tr><th>Medidas (cm)</th><th>US 6 · EU 36</th><th>US 8 · EU 38</th><th>US 10 · EU 40</th></tr></thead><tbody><tr><th>Pecho</th><td>88</td><td>90</td><td>93</td></tr><tr><th>Cintura</th><td>70</td><td>72</td><td>75</td></tr><tr><th>Cadera</th><td>96</td><td>98</td><td>101</td></tr><tr><th>Largo</th><td>150</td><td>150</td><td>155</td></tr></tbody></table></div><p>Tabla orientativa del fabricante. La talla base es US 8 / EU 38 y el vestido se ajusta de US 6 a 10 / EU 36–40. Confirma las medidas exactas en el atelier.</p><a href="/images/vestidos/aurora-rose/guia-tallas.png" target="_blank" rel="noreferrer">Consultar imagen original del fabricante ↗</a></details>;
+  }
+
+  if (!dress.sizeLabel && !dress.sizeRange) return null;
+  return <details className="size-guide"><summary>Guía de tallas <ChevronDown size={16} /></summary><div className="size-table-wrap"><table><tbody><tr><th>Talla base</th><td>{dress.sizeLabel || "A consultar"}</td></tr><tr><th>Rango ajustable</th><td>{dress.sizeRange || "A consultar"}</td></tr></tbody></table></div><p>Referencia orientativa para esta pieza. La disponibilidad final depende del ajuste real del vestido y de las medidas de la quinceañera. Confirma las medidas con el atelier antes de reservar.</p></details>;
 }
 
 function PublicBookingModal({ dress, onClose }) {
