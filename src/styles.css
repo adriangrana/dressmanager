@@ -65,3 +65,5 @@
 @media(max-width:900px){.portfolio-heading-actions{justify-content:flex-start}.portfolio-compact-mode .portfolio-card{grid-template-columns:1fr}.portfolio-compact-mode .portfolio-card-metrics{border-top:1px solid #e9ede6;padding-top:10px}}
 
 .photo-manager-item>div{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}.photo-manager-item .cover-photo{color:#496b54;background:#f1f5ef}.photo-manager-item .remove-photo{color:#8b5f58;background:#fffafa}
+
+.delete-booking-action{border-color:#ebd9d5;background:#fff8f6;color:#945b52}.delete-booking-action:hover{background:#f8e9e5}.button-danger{background:#9b514b;border-color:#9b514b;color:#fff}.button-danger:hover{background:#823f3b;border-color:#823f3b}.delete-booking-modal{width:min(100%,510px)}.delete-booking-modal>p strong{color:#35483d}.delete-booking-modal .form-error{margin-bottom:15px}

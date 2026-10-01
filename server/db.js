@@ -68,6 +68,7 @@ db.exec(`
     vat REAL NOT NULL DEFAULT 0,
     helper_cost REAL NOT NULL DEFAULT 0,
     maintenance REAL NOT NULL DEFAULT 0,
+    maintenance_expense REAL NOT NULL DEFAULT 0,
     session_type TEXT NOT NULL DEFAULT 'exterior',
     studio_name TEXT NOT NULL DEFAULT '',
     contact_name TEXT NOT NULL DEFAULT '',
@@ -100,13 +101,19 @@ for (const [column, definition] of Object.entries({
   contact_name: "TEXT NOT NULL DEFAULT ''", duration_minutes: "INTEGER NOT NULL DEFAULT 120",
   start_time: "TEXT NOT NULL DEFAULT '10:00'", payment_status: "TEXT NOT NULL DEFAULT 'pending'",
   paid_at: "TEXT", notes: "TEXT NOT NULL DEFAULT ''",
+  maintenance_expense: "REAL NOT NULL DEFAULT 0",
 })) ensureColumn("bookings", column, definition);
 
-// Preserve the accounting meaning of sessions completed before payment tracking existed.
+// Older sessions have no evidence of payment. Keep them out of collected revenue until reviewed.
 const paymentMigration = db.prepare("SELECT value FROM settings WHERE key='booking_payment_migration_v1'").get();
 if (!paymentMigration) {
-  db.prepare("UPDATE bookings SET payment_status='paid', paid_at=COALESCE(paid_at,created_at) WHERE status='completed'").run();
+  db.prepare("UPDATE bookings SET payment_status='unverified', paid_at=NULL WHERE status='completed'").run();
   db.prepare("INSERT INTO settings(key,value) VALUES('booking_payment_migration_v1',1)").run();
+}
+// The previous migration assumed that every completed legacy session was paid.
+if (!db.prepare("SELECT value FROM settings WHERE key='booking_payment_review_v2'").get()) {
+  db.prepare("UPDATE bookings SET payment_status='unverified', paid_at=NULL WHERE status='completed' AND payment_status='paid' AND paid_at=created_at").run();
+  db.prepare("INSERT INTO settings(key,value) VALUES('booking_payment_review_v2',1)").run();
 }
 
 const defaultSettings = {
