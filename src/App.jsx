@@ -426,7 +426,7 @@ function InventoryDressPreview({ dress, images, activeImage, setActiveImage, onC
         <h2>{dress.name}</h2>
         <p>{dress.description || "Sin descripción todavía."}</p>
         <div className="detail-facts"><div><span>TALLA</span><strong>{dress.sizeLabel || "Pendiente"}</strong></div><div><span>AJUSTE</span><strong>{dress.sizeRange || "Sin especificar"}</strong></div></div>
-        {dress.id === "aurora-rose" && <SizeGuide />}
+        <SizeGuide dress={dress} />
         <div className="inventory-preview-prices"><span className="kicker"><i /> INFORMACIÓN INTERNA</span><div className="inventory-preview-price-grid">
           <div><span>COSTE DE COMPRA</span><strong>{formatMoney(dress.purchaseCost)}</strong></div>
           <div><span>SESIÓN EN INTERIOR</span><strong>{displayTariff(dress, "interior")}</strong><small>30 min iniciales</small></div>
