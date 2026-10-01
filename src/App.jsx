@@ -492,7 +492,7 @@ function DressForm({ initial, onClose, onSaved }) {
       setSizeGuideRows(result.rows || []);
       if (!sizeGuideNote.trim() && result.note) setSizeGuideNote(result.note);
       setSizeGuideReadWarnings(result.warnings || []);
-      setSizeGuideReadStatus(`He leído ${result.rows?.length || 0} tallas. Revísalas antes de guardar.`);
+      setSizeGuideReadStatus(`He leído ${result.rows?.length || 0} tallas con OCR local. Revísalas antes de guardar.`);
     } catch (caught) {
       setSizeGuideReadStatus(caught.message);
     } finally {
@@ -532,7 +532,7 @@ function DressForm({ initial, onClose, onSaved }) {
       <label>Nota de la guía<textarea value={sizeGuideNote} onChange={(event) => setSizeGuideNote(event.target.value)} rows="2" maxLength="1000" placeholder="Ej. Tabla orientativa del fabricante. Confirmar medidas antes de reservar." /></label>
       {existingSizeGuideImage && <div className="existing-size-guide-image"><img src={existingSizeGuideImage} alt="Guía de tallas actual" /><div><strong>Imagen original del fabricante</strong><a href={existingSizeGuideImage} target="_blank" rel="noreferrer">Ver imagen ↗</a><button type="button" onClick={() => setExistingSizeGuideImage("")}>Quitar imagen</button></div></div>}
       <label className="upload-control"><ImagePlus size={20} /><span><strong>{existingSizeGuideImage ? "Sustituir imagen de la guía" : "Imagen original de la guía de tallas"}</strong><small>Opcional · JPG, PNG o WebP · máximo 8 MB</small></span><input name="sizeGuideImage" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { setSizeGuideFile(event.target.files?.[0] || null); setSizeGuideReadStatus(""); setSizeGuideReadWarnings([]); }} /></label>
-      <div className="size-guide-ai-row"><button type="button" className="button button-outline size-guide-read-button" disabled={readingSizeGuide || (!sizeGuideFile && !existingSizeGuideImage)} onClick={readSizeGuideImage}><Sparkles size={16} />{readingSizeGuide ? "Leyendo tabla…" : "Leer tabla de la imagen"}</button><small>La lectura es automática: comprueba los valores antes de guardar.</small></div>
+      <div className="size-guide-ai-row"><button type="button" className="button button-outline size-guide-read-button" disabled={readingSizeGuide || (!sizeGuideFile && !existingSizeGuideImage)} onClick={readSizeGuideImage}><Sparkles size={16} />{readingSizeGuide ? "Leyendo tabla…" : "Leer tabla · OCR local"}</button><small>Se procesa en este equipo, sin API ni subir la imagen a ningún servicio.</small></div>
       {sizeGuideReadStatus && <div className={`size-guide-read-status ${sizeGuideReadWarnings.length ? "warning" : ""}`}><Info size={15} /><span>{sizeGuideReadStatus}{sizeGuideReadWarnings.length > 0 && <small>{sizeGuideReadWarnings.join(" · ")}</small>}</span></div>}
     </section>
     <h3>Tarifa de sesión en interior</h3>
