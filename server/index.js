@@ -7,7 +7,7 @@ import helmet from "helmet";
 import multer from "multer";
 import yazl from "yazl";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { calculateRental, db, ensureAdmin, getSettings, DATA_DIR, PUBLIC_DIR, ROOT } from "./db.js";
@@ -86,6 +86,13 @@ const requestLimiter = rateLimit({
   standardHeaders: "draft-8",
   legacyHeaders: false,
   message: { error: "Demasiadas solicitudes desde esta conexión. Prueba de nuevo más tarde." },
+});
+const visionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: { error: "Demasiadas lecturas automáticas de tablas. Espera un poco y vuelve a probar." },
 });
 
 function requireAdmin(req, res, next) {
@@ -228,6 +235,142 @@ const upload = multer({
   },
 });
 
+const visionUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 1, fileSize: 8 * 1024 * 1024 },
+  fileFilter: (_req, file, callback) => {
+    if (!imageExtensions[file.mimetype]) return callback(new Error("Usa una imagen JPG, PNG o WebP."));
+    callback(null, true);
+  },
+});
+
+function mimeFromImagePath(imagePath) {
+  const ext = path.extname(imagePath || "").toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  return "image/jpeg";
+}
+
+function storedGuideImageData(imagePath) {
+  const publicPath = cleanText(imagePath, 500);
+  if (!publicPath.startsWith("/uploads/") && !publicPath.startsWith("/images/")) {
+    throw new Error("La imagen de la guía no es válida.");
+  }
+  const normalized = publicPath.replace(/^\/+/, "");
+  const absolute = path.resolve(PUBLIC_DIR, normalized);
+  const publicRoot = path.resolve(PUBLIC_DIR) + path.sep;
+  if (!absolute.startsWith(publicRoot) || !existsSync(absolute)) throw new Error("No encontramos la imagen de la guía.");
+  return { buffer: readFileSync(absolute), mime: mimeFromImagePath(absolute) };
+}
+
+function openAIOutputText(response) {
+  if (typeof response?.output_text === "string" && response.output_text.trim()) return response.output_text;
+  for (const item of response?.output || []) {
+    for (const part of item?.content || []) {
+      if (part?.type === "output_text" && typeof part.text === "string") return part.text;
+    }
+  }
+  return "";
+}
+
+async function extractSizeGuideFromImage(buffer, mime) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("Falta OPENAI_API_KEY en el archivo .env del servidor.");
+  const model = process.env.OPENAI_VISION_MODEL || "gpt-5.6-luna";
+  const imageUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    signal: AbortSignal.timeout(45_000),
+    body: JSON.stringify({
+      model,
+      input: [{
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: [
+              "Lee esta tabla de tallas de un fabricante de vestidos.",
+              "Transcribe únicamente valores visibles; no calcules, no conviertas ni inventes datos ausentes.",
+              "Si aparecen centímetros y pulgadas, usa los centímetros.",
+              "En size conserva las etiquetas de talla que realmente figuren en la imagen (por ejemplo US 14, EU 44 o ambas si ambas aparecen).",
+              "Devuelve pecho en bust, cintura en waist, cadera en hip y largo/longitud en length.",
+              "Si una medida no aparece, devuelve una cadena vacía.",
+              "Ordena las filas de menor a mayor talla cuando sea posible.",
+              "En warnings explica cualquier texto dudoso o columna que no hayas podido leer con seguridad.",
+            ].join("\n"),
+          },
+          { type: "input_image", image_url: imageUrl, detail: "high" },
+        ],
+      }],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "dress_size_guide",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              rows: {
+                type: "array",
+                maxItems: 20,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    size: { type: "string" },
+                    bust: { type: "string" },
+                    waist: { type: "string" },
+                    hip: { type: "string" },
+                    length: { type: "string" },
+                  },
+                  required: ["size", "bust", "waist", "hip", "length"],
+                },
+              },
+              note: { type: "string" },
+              warnings: { type: "array", items: { type: "string" }, maxItems: 10 },
+            },
+            required: ["rows", "note", "warnings"],
+          },
+        },
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error?.message || "No se pudo leer la tabla con visión.";
+    throw new Error(message);
+  }
+  const outputText = openAIOutputText(payload);
+  if (!outputText) throw new Error("El modelo no devolvió una tabla legible.");
+
+  let parsed;
+  try { parsed = JSON.parse(outputText); }
+  catch { throw new Error("La respuesta de visión no tenía un formato válido."); }
+
+  const rows = Array.isArray(parsed?.rows) ? parsed.rows.map((row) => ({
+    size: cleanText(row?.size, 60),
+    bust: cleanText(row?.bust, 20),
+    waist: cleanText(row?.waist, 20),
+    hip: cleanText(row?.hip, 20),
+    length: cleanText(row?.length, 20),
+  })).filter((row) => row.size) : [];
+
+  if (!rows.length) throw new Error("No pude identificar filas de tallas con suficiente claridad.");
+  return {
+    rows,
+    note: cleanText(parsed?.note, 1000),
+    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map((item) => cleanText(item, 300)).filter(Boolean).slice(0, 10) : [],
+    model,
+  };
+}
+
 function csvCell(value) {
   const textValue = String(value ?? "");
   const trimmed = textValue.trim();
@@ -342,6 +485,21 @@ app.get("/api/admin/overview", requireAdmin, (_req, res) => {
     eachShare: profit / 2,
     settings: getSettings(),
   });
+});
+
+app.post("/api/admin/size-guide/read", requireAdmin, visionLimiter, visionUpload.single("image"), async (req, res) => {
+  try {
+    let image;
+    if (req.file?.buffer) image = { buffer: req.file.buffer, mime: req.file.mimetype };
+    else if (req.body?.imagePath) image = storedGuideImageData(req.body.imagePath);
+    else throw new Error("Selecciona o guarda primero una imagen de la guía de tallas.");
+
+    const extracted = await extractSizeGuideFromImage(image.buffer, image.mime);
+    res.json(extracted);
+  } catch (error) {
+    const status = /OPENAI_API_KEY/.test(error.message) ? 503 : 400;
+    res.status(status).json({ error: error.message });
+  }
 });
 
 app.get("/api/admin/dresses", requireAdmin, (_req, res) => {
