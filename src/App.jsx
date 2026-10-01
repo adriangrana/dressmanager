@@ -446,6 +446,10 @@ function DressForm({ initial, onClose, onSaved }) {
   const [sizeGuideRows, setSizeGuideRows] = useState(() => Array.isArray(initial?.sizeGuide?.rows) ? initial.sizeGuide.rows : []);
   const [sizeGuideNote, setSizeGuideNote] = useState(initial?.sizeGuide?.note || "");
   const [existingSizeGuideImage, setExistingSizeGuideImage] = useState(initial?.sizeGuide?.image || "");
+  const [sizeGuideFile, setSizeGuideFile] = useState(null);
+  const [readingSizeGuide, setReadingSizeGuide] = useState(false);
+  const [sizeGuideReadStatus, setSizeGuideReadStatus] = useState("");
+  const [sizeGuideReadWarnings, setSizeGuideReadWarnings] = useState([]);
   function changeCategory(event) {
     const next = event.target.value;
     const form = event.currentTarget.form;
@@ -471,6 +475,29 @@ function DressForm({ initial, onClose, onSaved }) {
   }
   function updateSizeGuideRow(index, field, value) {
     setSizeGuideRows((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row));
+  }
+  async function readSizeGuideImage() {
+    if (!sizeGuideFile && !existingSizeGuideImage) {
+      setSizeGuideReadStatus("Selecciona o guarda primero una imagen de la guía.");
+      return;
+    }
+    setReadingSizeGuide(true);
+    setSizeGuideReadStatus("");
+    setSizeGuideReadWarnings([]);
+    try {
+      const data = new FormData();
+      if (sizeGuideFile) data.append("image", sizeGuideFile);
+      else data.append("imagePath", existingSizeGuideImage);
+      const result = await api("/api/admin/size-guide/read", { method: "POST", body: data });
+      setSizeGuideRows(result.rows || []);
+      if (!sizeGuideNote.trim() && result.note) setSizeGuideNote(result.note);
+      setSizeGuideReadWarnings(result.warnings || []);
+      setSizeGuideReadStatus(`He leído ${result.rows?.length || 0} tallas. Revísalas antes de guardar.`);
+    } catch (caught) {
+      setSizeGuideReadStatus(caught.message);
+    } finally {
+      setReadingSizeGuide(false);
+    }
   }
   async function submit(event) {
     event.preventDefault(); setBusy(true); setError("");
@@ -504,7 +531,9 @@ function DressForm({ initial, onClose, onSaved }) {
       {sizeGuideRows.length > 0 && <div className="size-guide-editor-table"><div className="size-guide-editor-row header"><span>Talla</span><span>Pecho</span><span>Cintura</span><span>Cadera</span><span>Largo</span><span /></div>{sizeGuideRows.map((row, index) => <div className="size-guide-editor-row" key={index}><input aria-label="Talla" value={row.size || ""} onChange={(event) => updateSizeGuideRow(index, "size", event.target.value)} placeholder="US 14 · EU 44" /><input aria-label="Pecho en cm" value={row.bust || ""} onChange={(event) => updateSizeGuideRow(index, "bust", event.target.value)} inputMode="decimal" placeholder="cm" /><input aria-label="Cintura en cm" value={row.waist || ""} onChange={(event) => updateSizeGuideRow(index, "waist", event.target.value)} inputMode="decimal" placeholder="cm" /><input aria-label="Cadera en cm" value={row.hip || ""} onChange={(event) => updateSizeGuideRow(index, "hip", event.target.value)} inputMode="decimal" placeholder="cm" /><input aria-label="Largo en cm" value={row.length || ""} onChange={(event) => updateSizeGuideRow(index, "length", event.target.value)} inputMode="decimal" placeholder="cm" /><button type="button" className="remove-size-row" onClick={() => setSizeGuideRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))} aria-label="Eliminar talla"><X size={15} /></button></div>)}</div>}
       <label>Nota de la guía<textarea value={sizeGuideNote} onChange={(event) => setSizeGuideNote(event.target.value)} rows="2" maxLength="1000" placeholder="Ej. Tabla orientativa del fabricante. Confirmar medidas antes de reservar." /></label>
       {existingSizeGuideImage && <div className="existing-size-guide-image"><img src={existingSizeGuideImage} alt="Guía de tallas actual" /><div><strong>Imagen original del fabricante</strong><a href={existingSizeGuideImage} target="_blank" rel="noreferrer">Ver imagen ↗</a><button type="button" onClick={() => setExistingSizeGuideImage("")}>Quitar imagen</button></div></div>}
-      <label className="upload-control"><ImagePlus size={20} /><span><strong>{existingSizeGuideImage ? "Sustituir imagen de la guía" : "Imagen original de la guía de tallas"}</strong><small>Opcional · JPG, PNG o WebP · máximo 8 MB</small></span><input name="sizeGuideImage" type="file" accept="image/jpeg,image/png,image/webp" /></label>
+      <label className="upload-control"><ImagePlus size={20} /><span><strong>{existingSizeGuideImage ? "Sustituir imagen de la guía" : "Imagen original de la guía de tallas"}</strong><small>Opcional · JPG, PNG o WebP · máximo 8 MB</small></span><input name="sizeGuideImage" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { setSizeGuideFile(event.target.files?.[0] || null); setSizeGuideReadStatus(""); setSizeGuideReadWarnings([]); }} /></label>
+      <div className="size-guide-ai-row"><button type="button" className="button button-outline size-guide-read-button" disabled={readingSizeGuide || (!sizeGuideFile && !existingSizeGuideImage)} onClick={readSizeGuideImage}><Sparkles size={16} />{readingSizeGuide ? "Leyendo tabla…" : "Leer tabla de la imagen"}</button><small>La lectura es automática: comprueba los valores antes de guardar.</small></div>
+      {sizeGuideReadStatus && <div className={`size-guide-read-status ${sizeGuideReadWarnings.length ? "warning" : ""}`}><Info size={15} /><span>{sizeGuideReadStatus}{sizeGuideReadWarnings.length > 0 && <small>{sizeGuideReadWarnings.join(" · ")}</small>}</span></div>}
     </section>
     <h3>Tarifa de sesión en interior</h3>
     <div className="form-columns"><label>Precio inicial (€ IVA incl.)<input name="interiorPrice" type="number" min="0.01" step="0.01" placeholder="Por definir" defaultValue={initial ? (Number(tariffFor(initial, "interior").price) || "") : ""} /></label><label>Incluye (minutos)<input value="30" disabled /></label></div>
