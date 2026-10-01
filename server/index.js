@@ -5,6 +5,7 @@ import session from "express-session";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import multer from "multer";
+import Tesseract from "tesseract.js";
 import yazl from "yazl";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
@@ -263,111 +264,266 @@ function storedGuideImageData(imagePath) {
   return { buffer: readFileSync(absolute), mime: mimeFromImagePath(absolute) };
 }
 
-function openAIOutputText(response) {
-  if (typeof response?.output_text === "string" && response.output_text.trim()) return response.output_text;
-  for (const item of response?.output || []) {
-    for (const part of item?.content || []) {
-      if (part?.type === "output_text" && typeof part.text === "string") return part.text;
-    }
-  }
-  return "";
+const { createWorker, OEM, PSM } = Tesseract;
+let sizeGuideWorkerPromise = null;
+
+function normalizeOcrText(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[|]/g, "I")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-async function extractSizeGuideFromImage(buffer, mime) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("Falta OPENAI_API_KEY en el archivo .env del servidor.");
-  const model = process.env.OPENAI_VISION_MODEL || "gpt-5.6-luna";
-  const imageUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+function ocrNumber(value) {
+  const match = String(value || "").replace(",", ".").match(/\d+(?:\.\d+)?/);
+  return match ? match[0] : "";
+}
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    signal: AbortSignal.timeout(45_000),
-    body: JSON.stringify({
-      model,
-      input: [{
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: [
-              "Lee esta tabla de tallas de un fabricante de vestidos.",
-              "Transcribe únicamente valores visibles; no calcules, no conviertas ni inventes datos ausentes.",
-              "Si aparecen centímetros y pulgadas, usa los centímetros.",
-              "En size conserva las etiquetas de talla que realmente figuren en la imagen (por ejemplo US 14, EU 44 o ambas si ambas aparecen).",
-              "Devuelve pecho en bust, cintura en waist, cadera en hip y largo/longitud en length.",
-              "Si una medida no aparece, devuelve una cadena vacía.",
-              "Ordena las filas de menor a mayor talla cuando sea posible.",
-              "En warnings explica cualquier texto dudoso o columna que no hayas podido leer con seguridad.",
-            ].join("\n"),
-          },
-          { type: "input_image", image_url: imageUrl, detail: "high" },
-        ],
-      }],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "dress_size_guide",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              rows: {
-                type: "array",
-                maxItems: 20,
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    size: { type: "string" },
-                    bust: { type: "string" },
-                    waist: { type: "string" },
-                    hip: { type: "string" },
-                    length: { type: "string" },
-                  },
-                  required: ["size", "bust", "waist", "hip", "length"],
-                },
-              },
-              note: { type: "string" },
-              warnings: { type: "array", items: { type: "string" }, maxItems: 10 },
-            },
-            required: ["rows", "note", "warnings"],
-          },
-        },
-      },
-    }),
-  });
+function numericValues(words) {
+  return words.map((word) => ocrNumber(word.text)).filter(Boolean);
+}
 
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = payload?.error?.message || "No se pudo leer la tabla con visión.";
-    throw new Error(message);
+const measurementAliases = {
+  bust: /\b(BUST|CHEST|PECHO)\b/i,
+  waist: /\b(WAIST|CINTURA)\b/i,
+  hip: /\b(HIP|HIPS|CADERA|CADERAS)\b/i,
+  length: /\b(LENGTH|LONGITUD|LARGO|HOLLOW|FLOOR)\b/i,
+};
+
+function measurementKey(text) {
+  const normalized = normalizeOcrText(text);
+  return Object.entries(measurementAliases).find(([, pattern]) => pattern.test(normalized))?.[0] || "";
+}
+
+function visualRowsFromBlocks(blocks) {
+  const words = (blocks || [])
+    .flatMap((block) => block.paragraphs || [])
+    .flatMap((paragraph) => paragraph.lines || [])
+    .flatMap((line) => line.words || [])
+    .filter((word) => normalizeOcrText(word.text) && Number(word.confidence || 0) >= 18)
+    .map((word) => ({
+      text: normalizeOcrText(word.text),
+      confidence: Number(word.confidence || 0),
+      x0: Number(word.bbox?.x0 || 0),
+      x1: Number(word.bbox?.x1 || 0),
+      y0: Number(word.bbox?.y0 || 0),
+      y1: Number(word.bbox?.y1 || 0),
+      cx: (Number(word.bbox?.x0 || 0) + Number(word.bbox?.x1 || 0)) / 2,
+      cy: (Number(word.bbox?.y0 || 0) + Number(word.bbox?.y1 || 0)) / 2,
+    }))
+    .sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+
+  if (!words.length) return [];
+  const heights = words.map((word) => Math.max(1, word.y1 - word.y0)).sort((a, b) => a - b);
+  const medianHeight = heights[Math.floor(heights.length / 2)] || 14;
+  const threshold = Math.max(8, medianHeight * 0.7);
+  const rows = [];
+
+  for (const word of words) {
+    let row = rows.find((candidate) => Math.abs(candidate.cy - word.cy) <= threshold);
+    if (!row) {
+      row = { cy: word.cy, words: [] };
+      rows.push(row);
+    }
+    row.words.push(word);
+    row.cy = row.words.reduce((sum, item) => sum + item.cy, 0) / row.words.length;
   }
-  const outputText = openAIOutputText(payload);
-  if (!outputText) throw new Error("El modelo no devolvió una tabla legible.");
 
-  let parsed;
-  try { parsed = JSON.parse(outputText); }
-  catch { throw new Error("La respuesta de visión no tenía un formato válido."); }
+  return rows
+    .sort((a, b) => a.cy - b.cy)
+    .map((row) => {
+      row.words.sort((a, b) => a.cx - b.cx);
+      return {
+        ...row,
+        text: row.words.map((word) => word.text).join(" "),
+        confidence: row.words.reduce((sum, word) => sum + word.confidence, 0) / row.words.length,
+      };
+    });
+}
 
-  const rows = Array.isArray(parsed?.rows) ? parsed.rows.map((row) => ({
-    size: cleanText(row?.size, 60),
-    bust: cleanText(row?.bust, 20),
-    waist: cleanText(row?.waist, 20),
-    hip: cleanText(row?.hip, 20),
-    length: cleanText(row?.length, 20),
-  })).filter((row) => row.size) : [];
+function bestMeasurementRows(rows) {
+  const found = {};
+  for (const row of rows) {
+    const key = measurementKey(row.text);
+    if (!key) continue;
+    const values = numericValues(row.words);
+    if (values.length < 2) continue;
+    const cmBonus = /\bCM\b|CENTIMET/i.test(row.text) ? 100 : 0;
+    const median = values.map(Number).sort((a, b) => a - b)[Math.floor(values.length / 2)] || 0;
+    const likelyCmBonus = median >= 60 ? 30 : 0;
+    const score = cmBonus + likelyCmBonus + values.length + row.confidence / 100;
+    if (!found[key] || score > found[key].score) found[key] = { row, values, score };
+  }
+  return found;
+}
 
-  if (!rows.length) throw new Error("No pude identificar filas de tallas con suficiente claridad.");
+function parseHorizontalSizeTable(rows, fullText) {
+  const measurementRows = bestMeasurementRows(rows);
+  const keys = Object.keys(measurementRows);
+  if (keys.length < 2) return null;
+
+  const valueCounts = keys.map((key) => measurementRows[key].values.length);
+  const targetCount = Math.min(...valueCounts);
+  if (targetCount < 2) return null;
+  const firstMeasureY = Math.min(...keys.map((key) => measurementRows[key].row.cy));
+
+  const headerCandidates = rows
+    .filter((row) => row.cy < firstMeasureY && firstMeasureY - row.cy < 350)
+    .map((row) => ({ row, values: numericValues(row.words) }))
+    .filter((item) => item.values.length >= targetCount);
+
+  const usCandidate = headerCandidates
+    .filter(({ row }) => /\b(US|USA|SIZE|TALLA)\b/i.test(row.text) && !/\b(EU|EUR|EURO)\b/i.test(row.text))
+    .sort((a, b) => Math.abs(a.values.length - targetCount) - Math.abs(b.values.length - targetCount))[0]
+    || headerCandidates
+      .filter(({ values }) => values.slice(0, targetCount).every((value) => Number(value) <= 32))
+      .sort((a, b) => b.row.cy - a.row.cy)[0];
+
+  if (!usCandidate) return null;
+  const usValues = usCandidate.values.slice(-targetCount);
+
+  const euCandidate = headerCandidates
+    .filter(({ row }) => /\b(EU|EUR|EURO)\b/i.test(row.text))
+    .sort((a, b) => Math.abs(a.values.length - targetCount) - Math.abs(b.values.length - targetCount))[0];
+  const euValues = euCandidate?.values?.slice(-targetCount) || [];
+
+  const resultRows = Array.from({ length: targetCount }, (_, index) => {
+    const us = usValues[index] || "";
+    const eu = euValues[index] || "";
+    const label = eu ? `US ${us} · EU ${eu}` : `US ${us}`;
+    return {
+      size: label,
+      bust: measurementRows.bust?.values?.slice(-targetCount)?.[index] || "",
+      waist: measurementRows.waist?.values?.slice(-targetCount)?.[index] || "",
+      hip: measurementRows.hip?.values?.slice(-targetCount)?.[index] || "",
+      length: measurementRows.length?.values?.slice(-targetCount)?.[index] || "",
+    };
+  }).filter((row) => row.size && [row.bust, row.waist, row.hip, row.length].some(Boolean));
+
+  if (resultRows.length < 2) return null;
+  const warnings = [];
+  if (/\bINCH|INCHES\b/i.test(fullText) && /\bCM\b/i.test(fullText)) warnings.push("La imagen contiene centímetros y pulgadas; revisa que la fila extraída sea la de centímetros.");
+  if (keys.length < 4) warnings.push("No se reconocieron todas las medidas; completa manualmente las columnas vacías.");
+  return { rows: resultRows, warnings };
+}
+
+function headerColumns(rows) {
+  let best = null;
+  for (let index = 0; index < rows.length; index += 1) {
+    const band = rows.slice(Math.max(0, index - 1), Math.min(rows.length, index + 2));
+    const words = band.flatMap((row) => row.words);
+    const columns = {};
+    for (const word of words) {
+      const text = normalizeOcrText(word.text);
+      if (!columns.size && /^(US|SIZE|TALLA)$/i.test(text)) columns.size = word.cx;
+      if (!columns.eu && /^(EU|EUR|EURO)$/i.test(text)) columns.eu = word.cx;
+      const key = measurementKey(text);
+      if (key && columns[key] === undefined) columns[key] = word.cx;
+    }
+    const measureCount = ["bust", "waist", "hip", "length"].filter((key) => columns[key] !== undefined).length;
+    const score = (columns.size !== undefined ? 2 : 0) + measureCount;
+    if (score >= 4 && (!best || score > best.score)) best = { columns, score, endIndex: Math.min(rows.length - 1, index + 1) };
+  }
+  return best;
+}
+
+function parseVerticalSizeTable(rows, fullText) {
+  const header = headerColumns(rows);
+  if (!header) return null;
+  const columns = header.columns;
+  const columnList = Object.entries(columns).sort((a, b) => a[1] - b[1]);
+  const result = [];
+
+  for (const row of rows.slice(header.endIndex + 1, header.endIndex + 28)) {
+    const numericWords = row.words.filter((word) => ocrNumber(word.text));
+    if (numericWords.length < 3) continue;
+    const assigned = {};
+    for (const word of numericWords) {
+      const nearest = columnList
+        .map(([key, x]) => ({ key, distance: Math.abs(word.cx - x) }))
+        .sort((a, b) => a.distance - b.distance)[0];
+      if (nearest && assigned[nearest.key] === undefined) assigned[nearest.key] = ocrNumber(word.text);
+    }
+    const us = assigned.size || "";
+    if (!us || Number(us) > 32) continue;
+    const eu = assigned.eu || "";
+    const measurements = [assigned.bust, assigned.waist, assigned.hip, assigned.length].filter(Boolean);
+    if (measurements.length < 2) continue;
+    result.push({
+      size: eu ? `US ${us} · EU ${eu}` : `US ${us}`,
+      bust: assigned.bust || "",
+      waist: assigned.waist || "",
+      hip: assigned.hip || "",
+      length: assigned.length || "",
+    });
+  }
+
+  if (result.length < 2) return null;
+  const warnings = [];
+  if (/\bINCH|INCHES\b/i.test(fullText) && /\bCM\b/i.test(fullText)) warnings.push("La imagen contiene centímetros y pulgadas; verifica las cifras extraídas.");
+  if (!columns.eu) warnings.push("No se reconoció una columna EU; las tallas se muestran como US.");
+  return { rows: result.slice(0, 20), warnings };
+}
+
+function parseSizeGuideOcr(blocks, rawText) {
+  const rows = visualRowsFromBlocks(blocks);
+  const parsed = parseHorizontalSizeTable(rows, rawText) || parseVerticalSizeTable(rows, rawText);
+  if (!parsed?.rows?.length) {
+    throw new Error("He podido leer texto, pero no reconstruir la tabla con seguridad. Puedes introducir las medidas manualmente.");
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const row of parsed.rows) {
+    const key = row.size.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(row);
+  }
   return {
-    rows,
-    note: cleanText(parsed?.note, 1000),
-    warnings: Array.isArray(parsed?.warnings) ? parsed.warnings.map((item) => cleanText(item, 300)).filter(Boolean).slice(0, 10) : [],
-    model,
+    rows: deduped,
+    note: "Medidas extraídas localmente de la imagen del fabricante. Revísalas antes de guardar.",
+    warnings: parsed.warnings || [],
+  };
+}
+
+async function getSizeGuideWorker() {
+  if (!sizeGuideWorkerPromise) {
+    const langPath = path.join(ROOT, "node_modules", "@tesseract.js-data", "eng", "4.0.0_best_int");
+    const modelPath = path.join(langPath, "eng.traineddata.gz");
+    if (!existsSync(modelPath)) throw new Error("Falta el modelo OCR local. Ejecuta npm install y vuelve a desplegar la aplicación.");
+    sizeGuideWorkerPromise = createWorker("eng", OEM.LSTM_ONLY, {
+      langPath,
+      gzip: true,
+      cacheMethod: "none",
+      logger: () => {},
+    }).then(async (worker) => {
+      await worker.setParameters({
+        tessedit_pageseg_mode: PSM.AUTO,
+        preserve_interword_spaces: "1",
+        user_defined_dpi: "300",
+      });
+      return worker;
+    }).catch((error) => {
+      sizeGuideWorkerPromise = null;
+      throw error;
+    });
+  }
+  return sizeGuideWorkerPromise;
+}
+
+async function extractSizeGuideFromImage(buffer) {
+  const worker = await getSizeGuideWorker();
+  const result = await worker.recognize(buffer, {}, { text: true, blocks: true });
+  const rawText = normalizeOcrText(result.data?.text || "");
+  if (!rawText) throw new Error("El OCR local no detectó texto legible en la imagen.");
+  const parsed = parseSizeGuideOcr(result.data?.blocks || [], rawText);
+  return {
+    ...parsed,
+    engine: "Tesseract.js 7 · local",
+    rawText: rawText.slice(0, 4000),
   };
 }
 
@@ -494,11 +650,10 @@ app.post("/api/admin/size-guide/read", requireAdmin, visionLimiter, visionUpload
     else if (req.body?.imagePath) image = storedGuideImageData(req.body.imagePath);
     else throw new Error("Selecciona o guarda primero una imagen de la guía de tallas.");
 
-    const extracted = await extractSizeGuideFromImage(image.buffer, image.mime);
+    const extracted = await extractSizeGuideFromImage(image.buffer);
     res.json(extracted);
   } catch (error) {
-    const status = /OPENAI_API_KEY/.test(error.message) ? 503 : 400;
-    res.status(status).json({ error: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
 
