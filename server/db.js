@@ -167,6 +167,10 @@ if (!seededDress) {
     });
 }
 
+// Seed the manufacturer guide for Aurora on both new and upgraded databases.
+db.prepare("UPDATE dresses SET size_guide_json=?, size_guide_image=? WHERE id='aurora-rose' AND (size_guide_json='' OR size_guide_json IS NULL)")
+  .run(auroraSizeGuide, "/images/vestidos/aurora-rose/guia-tallas.png");
+
 export function ensureAdmin(email, password) {
   const normalizedEmail = String(email || "").trim().toLowerCase();
   if (!normalizedEmail || !password || String(password).length < 12) {
