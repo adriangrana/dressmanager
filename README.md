@@ -26,6 +26,8 @@ Abre `http://localhost:5173`. En el primer arranque, el servidor crea la base de
 
 Las variables necesarias son `SESSION_SECRET`, `ADMIN_EMAIL` y `ADMIN_PASSWORD`. Puedes partir de `.env.example`; la contraseña debe tener al menos 12 caracteres. El archivo `.env` no se guarda en Git.
 
+La lectura automática de tablas de tallas es opcional y usa visión a través de la API de OpenAI. Para activarla añade `OPENAI_API_KEY` a `.env`. Puedes cambiar el modelo con `OPENAI_VISION_MODEL`; por defecto se usa `gpt-5.6-luna`. La imagen se envía al modelo solo cuando el administrador pulsa **Leer tabla de la imagen** y los valores extraídos deben revisarse antes de guardarlos.
+
 Para cambiar la contraseña después de crear la base de datos, actualiza `ADMIN_PASSWORD` en `.env` y ejecuta `npm run reset-admin`.
 
 ## Datos y fotos
