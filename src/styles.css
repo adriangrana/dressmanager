@@ -80,3 +80,7 @@
 .existing-size-guide-image img{width:72px;height:72px;object-fit:cover;border-radius:3px;border:1px solid #e1e5df}
 .existing-size-guide-image>div{display:grid;gap:4px}.existing-size-guide-image strong{font-size:12px;color:#40564a}.existing-size-guide-image a,.existing-size-guide-image button{font-size:11px;color:#587263;text-align:left}.existing-size-guide-image button{border:0;background:transparent;padding:0;color:#8d615b}
 @media(max-width:700px){.size-guide-editor-head{flex-direction:column}.size-guide-editor-head .small-action{align-self:flex-start}}
+
+
+.size-guide-ai-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.size-guide-ai-row small{color:#78857c;font-size:11px;line-height:1.4}.size-guide-read-button{min-height:38px;padding:0 13px;white-space:nowrap}.size-guide-read-status{display:flex;align-items:flex-start;gap:8px;padding:10px 11px;border:1px solid #d8e4d8;border-radius:4px;background:#f2f7f1;color:#496654;font-size:12px;line-height:1.45}.size-guide-read-status.warning{border-color:#eadfbf;background:#faf6e9;color:#806a34}.size-guide-read-status>span{display:grid;gap:3px}.size-guide-read-status small{font-size:10px;color:inherit;opacity:.88}
+@media(max-width:600px){.size-guide-ai-row{align-items:stretch}.size-guide-read-button{width:100%;justify-content:center}}
